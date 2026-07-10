@@ -1,0 +1,10 @@
+{
+  "reason": "The judgment omitted the binary success field.",
+  "satisfied_requirements": [],
+  "missing_requirements": [
+    "binary success"
+  ],
+  "partial_requirements": [],
+  "unverifiable_requirements": [],
+  "confidence": "high"
+}

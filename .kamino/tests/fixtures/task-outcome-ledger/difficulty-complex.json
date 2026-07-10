@@ -1,0 +1,29 @@
+{
+  "schema_version": "kamino451.bradley-terry-pairwise-ranking.v1",
+  "mode": "similar",
+  "status": "complete",
+  "target": {
+    "task_id": "task-ff7b40468402",
+    "task_text": "Plan a three-step article production pipeline that researches source material, writes a draft, fact-checks claims, and produces a final review report with verification evidence."
+  },
+  "estimated_insertion_rank": 2,
+  "estimated_difficulty_score": 1.25,
+  "nearest_prior_tasks": [
+    {
+      "task_id": "prior-article-pipeline",
+      "distance": 0.04
+    },
+    {
+      "task_id": "prior-blueprint-gap",
+      "distance": 0.33
+    }
+  ],
+  "binary_search_path": [
+    {
+      "anchor_task_id": "prior-article-pipeline",
+      "anchor_rank": 2,
+      "outcome": "tie"
+    }
+  ],
+  "low_confidence_comparisons": []
+}

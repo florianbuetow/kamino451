@@ -1,0 +1,6 @@
+{
+  "name": "afac",
+  "version": "0.1.0",
+  "description": "Agent Factory (agentfactory) — orchestrate, select, instantiate, decompose, and create Kamino agents from the .kamino/agents registry.",
+  "keywords": ["agents", "agent-factory", "orchestration", "kamino"]
+}

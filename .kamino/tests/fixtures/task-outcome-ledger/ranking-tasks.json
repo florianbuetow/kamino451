@@ -1,0 +1,16 @@
+{
+  "tasks": [
+    {
+      "id": "format_sentence",
+      "text": "Format one sentence as Markdown."
+    },
+    {
+      "id": "review_article",
+      "text": "Review an article and return concrete Markdown feedback."
+    },
+    {
+      "id": "article_pipeline",
+      "text": "Build a three-step article production pipeline with writing, fact checking, and review."
+    }
+  ]
+}

@@ -1,0 +1,29 @@
+{
+  "schema_version": "kamino451.bradley-terry-pairwise-ranking.v1",
+  "mode": "similar",
+  "status": "complete",
+  "target": {
+    "task_id": "task-4d67e3bb1748",
+    "task_text": "Write a concise article review using the existing article-review agent. Return Markdown feedback and include concrete revision recommendations."
+  },
+  "estimated_insertion_rank": 4,
+  "estimated_difficulty_score": -0.45,
+  "nearest_prior_tasks": [
+    {
+      "task_id": "prior-article-review",
+      "distance": 0.05
+    },
+    {
+      "task_id": "prior-article-pipeline",
+      "distance": 0.9
+    }
+  ],
+  "binary_search_path": [
+    {
+      "anchor_task_id": "prior-article-review",
+      "anchor_rank": 4,
+      "outcome": "tie"
+    }
+  ],
+  "low_confidence_comparisons": []
+}

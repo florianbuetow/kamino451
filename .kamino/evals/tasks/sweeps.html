@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kamino451 Sweep Report</title>
+<style>
+  :root {
+    --surface: #fcfcfb; --page: #f9f9f7;
+    --ink: #0b0b0b; --ink-2: #52514e; --ink-muted: #898781;
+    --grid: #e1e0d9; --axis: #c3c2b7;
+    --auto: #2a78d6; --prescribed: #1baf7a;
+    --good: #0ca30c; --critical: #d03b3b;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 16px 20px 60px; background: var(--page); color: var(--ink);
+         font: 13px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  h1 { font-size: 16px; margin: 0 0 2px; }
+  h2 { font-size: 13px; margin: 26px 0 8px; color: var(--ink-2); text-transform: uppercase; letter-spacing: .04em; }
+  .sub { color: var(--ink-muted); margin-bottom: 14px; }
+  .tiles { display: flex; gap: 10px; flex-wrap: wrap; }
+  .tile { background: var(--surface); border: 1px solid var(--grid); border-radius: 6px; padding: 10px 14px; min-width: 130px; }
+  .tile .v { font-size: 20px; font-weight: 700; }
+  .tile .k { color: var(--ink-muted); font-size: 11px; }
+  table { border-collapse: collapse; width: 100%; background: var(--surface); }
+  th, td { border: 1px solid var(--grid); padding: 4px 8px; text-align: left; vertical-align: top; }
+  th { background: var(--page); color: var(--ink-2); }
+  .pass { color: var(--good); font-weight: 700; }
+  .fail { color: var(--critical); font-weight: 700; }
+  .muted { color: var(--ink-muted); }
+  .cards { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 6px; }
+  .card { background: var(--surface); border: 1px solid var(--grid); border-left: 3px solid var(--axis); border-radius: 6px;
+          padding: 10px 14px; width: 340px; cursor: pointer; }
+  .card.auto { border-left-color: var(--auto); }
+  .card.prescribed { border-left-color: var(--prescribed); }
+  .card h3 { margin: 0 0 6px; font-size: 13px; }
+  .card .row { display: flex; justify-content: space-between; gap: 8px; margin: 2px 0; }
+  .card .row .k { color: var(--ink-muted); }
+  .card table { display: none; margin-top: 8px; cursor: default; }
+  .card.open table { display: table; }
+  .badge { display: inline-block; border-radius: 10px; padding: 0 8px; font-size: 11px; border: 1px solid var(--axis); background: var(--page); margin: 1px 2px 1px 0; }
+  #legacy { color: var(--ink-muted); margin-top: 30px; border-top: 1px solid var(--grid); padding-top: 10px; }
+</style>
+</head>
+<body>
+<h1>Kamino451 Sweep Report</h1>
+<div class="sub" id="generated"></div>
+
+<div class="tiles" id="tiles"></div>
+
+<h2>Factory evaluations (auto)</h2>
+<div class="cards" id="auto-cards"></div>
+
+<h2>Agent evaluations (prescribed)</h2>
+<div class="cards" id="prescribed-cards"></div>
+
+<h2>Factory vs prescribed agents by corpus</h2>
+<div id="comparison"></div>
+
+<div id="legacy"></div>
+
+<script id="data" type="application/json">{"corpus_comparison": [], "generated_note": "from the task outcome ledger", "ledger_path": "/Users/flo/Developer/github/kamino451/.kamino/evals/tasks/task-outcome-ledger.jsonl", "schema_version": "kamino451.sweep-report-ui.v1", "sweeps": [], "totals": {"legacy": 0, "records": 0, "stamped": 0, "sweep_count": 0}}</script>
+<script>
+const DATA = JSON.parse(document.getElementById("data").textContent);
+const esc = s => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+const pct = rate => (rate === null || rate === undefined) ? "—" : (rate * 100).toFixed(1) + "%";
+
+document.getElementById("generated").textContent =
+  "generated " + DATA.generated_note + " — ledger: " + DATA.ledger_path;
+
+// ---- summary tiles -------------------------------------------------------
+(function tiles() {
+  const t = DATA.totals;
+  const tiles = [["records", t.records], ["sweeps", t.sweep_count], ["stamped", t.stamped], ["unstamped", t.legacy]];
+  document.getElementById("tiles").innerHTML = tiles.map(([k, v]) =>
+    '<div class="tile"><div class="v">' + esc(v) + '</div><div class="k">' + esc(k) + "</div></div>").join("");
+})();
+
+// ---- per-sweep cards ------------------------------------------------------
+function taskTableHtml(tasks) {
+  const rows = tasks.map(t =>
+    "<tr><td>" + esc(t.corpus_task_id || "—") + "</td><td>" + esc(t.attempt) + "</td><td>" + esc(t.model || "—") + "</td>" +
+    (t.success ? '<td class="pass">PASS</td>' : '<td class="fail">FAIL</td>') +
+    "<td>" + esc(t.record_id) + "</td></tr>").join("");
+  return "<table><thead><tr><th>Task</th><th>Attempt</th><th>Model</th><th>Result</th><th>Record</th></tr></thead><tbody>" + rows + "</tbody></table>";
+}
+
+function renderCards(containerId, mode) {
+  const container = document.getElementById(containerId);
+  const sweeps = DATA.sweeps.filter(s => s.mode === mode);
+  if (sweeps.length === 0) {
+    container.innerHTML = '<div class="muted">No ' + mode + ' sweeps recorded yet.</div>';
+    return;
+  }
+  container.innerHTML = sweeps.map(s =>
+    '<div class="card ' + mode + '">' +
+      "<h3>" + esc(s.corpus) + "</h3>" +
+      '<div class="row"><span class="k">sweep</span><span>' + esc(s.sweep_id) + "</span></div>" +
+      '<div class="row"><span class="k">blueprint(s)</span><span>' + esc(s.blueprints.join(", ") || "—") + "</span></div>" +
+      '<div class="row"><span class="k">models</span><span>' + s.models.map(m => '<span class="badge">' + esc(m) + "</span>").join("") + "</span></div>" +
+      '<div class="row"><span class="k">attempts</span><span>' + s.attempt_count + "</span></div>" +
+      '<div class="row"><span class="k">distinct tasks</span><span>' + s.distinct_task_count + "</span></div>" +
+      '<div class="row"><span class="k">pass rate</span><span>' + s.passed + "/" + s.attempt_count + " (" + pct(s.pass_rate) + ")</span></div>" +
+      taskTableHtml(s.tasks) +
+    "</div>").join("");
+  container.querySelectorAll(".card").forEach(card => {
+    card.addEventListener("click", event => {
+      if (event.target.closest("table")) return;
+      card.classList.toggle("open");
+    });
+  });
+}
+renderCards("auto-cards", "auto");
+renderCards("prescribed-cards", "prescribed");
+
+// ---- factory vs prescribed by corpus --------------------------------------
+(function comparison() {
+  const wrap = document.getElementById("comparison");
+  if (DATA.corpus_comparison.length === 0) {
+    wrap.innerHTML = '<div class="muted">No stamped sweeps yet — nothing to compare.</div>';
+    return;
+  }
+  function sideCells(side) {
+    if (!side) return '<td class="muted">no data</td><td class="muted">no data</td><td class="muted">no data</td>';
+    const models = Object.keys(side.by_model).sort().map(m =>
+      '<span class="badge">' + esc(m) + " " + pct(side.by_model[m].pass_rate) + "</span>").join("");
+    return "<td>" + side.attempts + "</td><td>" + side.passed + "/" + side.attempts + " (" + pct(side.pass_rate) + ")</td><td>" + models + "</td>";
+  }
+  let rows = "";
+  for (const entry of DATA.corpus_comparison) {
+    rows += '<tr><td rowspan="2">' + esc(entry.corpus) + '</td><td>auto</td>' + sideCells(entry.auto) + "</tr>";
+    rows += "<tr><td>prescribed</td>" + sideCells(entry.prescribed) + "</tr>";
+  }
+  wrap.innerHTML = "<table><thead><tr><th>Corpus</th><th>Mode</th><th>Attempts</th><th>Pass rate</th><th>Per-model</th></tr></thead><tbody>" + rows + "</tbody></table>";
+})();
+
+document.getElementById("legacy").textContent =
+  DATA.totals.legacy + " of " + DATA.totals.records + " records are unstamped (pre-sweep-stamp records) — excluded from the sweeps and comparison above.";
+</script>
+</body>
+</html>

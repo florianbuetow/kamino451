@@ -1,0 +1,10 @@
+{
+  "execution_status": "completed",
+  "output_paths": [
+    ".kamino/dispatch-queue/fixture/outputs/01-python-cli-agent.md"
+  ],
+  "verification_evidence": {
+    "outputs_non_empty": true,
+    "tests_passed": true
+  }
+}

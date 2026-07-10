@@ -1,0 +1,11 @@
+{
+  "route_chosen": "clone",
+  "agent_files_used": [
+    ".kamino/dispatch-queue/fixture/01-article-review-agent.md"
+  ],
+  "agent_blueprints_used": [
+    ".kamino/agents/library/writing/article-review-agent.md"
+  ],
+  "model": "sonnet",
+  "effort": "medium"
+}

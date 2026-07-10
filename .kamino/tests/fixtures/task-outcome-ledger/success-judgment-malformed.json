@@ -1,0 +1,9 @@
+{
+  "success": "yes",
+  "reason": "This fixture is malformed because success is not boolean.",
+  "satisfied_requirements": [],
+  "missing_requirements": [],
+  "partial_requirements": [],
+  "unverifiable_requirements": [],
+  "confidence": "high"
+}

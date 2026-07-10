@@ -1,0 +1,64 @@
+{
+  "ambiguity_score": 1,
+  "clarity_score": 4,
+  "completeness_score": 3,
+  "consistency_score": 5,
+  "difficulty_score": 1,
+  "judgement": {
+    "ambiguity_score": 1,
+    "clarity_score": 4,
+    "completeness_score": 3,
+    "consistency_score": 5,
+    "difficulty_score": 1,
+    "human_review_required": false,
+    "reasons": [
+      "19 words, estimated 36 tokens",
+      "readability Flesch=23.54, grade=12.34",
+      "2 explicit requirement signals",
+      "2 input/output or format signals",
+      "task type classified as writing",
+      "routing recommendation is small_fast_model_simple_agent"
+    ],
+    "recommended_mapping": "small_fast_model_simple_agent",
+    "task_type": "writing"
+  },
+  "metrics": {
+    "average_sentence_words": 9.5,
+    "bullet_count": 0,
+    "character_count": 143,
+    "constraint_indicator_count": 0,
+    "contradiction_indicator_count": 0,
+    "domain_indicator_count": 1,
+    "estimated_token_count": 36,
+    "explicit_requirement_count": 2,
+    "flesch_kincaid_grade": 12.34,
+    "flesch_reading_ease": 23.54,
+    "input_output_indicator_count": 2,
+    "sentence_count": 2,
+    "success_criteria_indicator_count": 0,
+    "syllable_count": 39,
+    "tool_indicator_count": 0,
+    "vague_term_count": 0,
+    "word_count": 19
+  },
+  "open_issues": [
+    "missing explicit success criteria"
+  ],
+  "recommended_mapping": "small_fast_model_simple_agent",
+  "schema_version": "kamino451.task-evaluation.v1",
+  "score_scale": {
+    "ambiguity_score": "1 = low ambiguity, 5 = high ambiguity",
+    "clarity_score": "1 = unclear, 5 = clear",
+    "completeness_score": "1 = missing key context, 5 = complete enough to route",
+    "consistency_score": "1 = contradictory, 5 = internally consistent",
+    "difficulty_score": "1 = easy, 5 = hard"
+  },
+  "source": {
+    "kind": "inline",
+    "path": null
+  },
+  "task_id": "task-4d67e3bb1748",
+  "task_text": "Write a concise article review using the existing article-review agent. Return Markdown feedback and include concrete revision recommendations.",
+  "task_text_hash": "sha256:4d67e3bb17489ce6435881f1a686c28239088eb1871ba692dbd3d077f2b88428",
+  "task_type": "writing"
+}

@@ -1,0 +1,13 @@
+{
+  "success": true,
+  "reason": "The output satisfies every explicit requirement and includes verification evidence.",
+  "satisfied_requirements": [
+    "markdown feedback",
+    "revision recommendations",
+    "verification evidence"
+  ],
+  "missing_requirements": [],
+  "partial_requirements": [],
+  "unverifiable_requirements": [],
+  "confidence": "high"
+}

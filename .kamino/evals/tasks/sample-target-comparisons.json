@@ -1,0 +1,26 @@
+{
+  "comparisons": [
+    {
+      "task_a_id": "add_cli_regression_tests",
+      "task_b_id": "python_cli_json",
+      "harder_task": "A",
+      "confidence": 0.85,
+      "reasoning": "The target includes regression testing and verification on top of CLI behavior.",
+      "key_factors": [
+        "verification",
+        "tests"
+      ]
+    },
+    {
+      "task_a_id": "add_cli_regression_tests",
+      "task_b_id": "package_refactor_tests",
+      "harder_task": "B",
+      "confidence": 0.85,
+      "reasoning": "The package refactor touches more code paths and carries broader regression risk.",
+      "key_factors": [
+        "regression risk",
+        "scope"
+      ]
+    }
+  ]
+}

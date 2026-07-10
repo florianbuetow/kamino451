@@ -1,0 +1,20 @@
+{
+  "tasks": [
+    {
+      "id": "format_markdown_sentence",
+      "text": "Format one sentence as Markdown."
+    },
+    {
+      "id": "python_cli_json",
+      "text": "Write a Python CLI that reads a UTF-8 input file, validates that it is not empty, and emits a JSON summary."
+    },
+    {
+      "id": "package_refactor_tests",
+      "text": "Refactor a Python package to separate parsing from rendering, preserve behavior, add regression tests, and update user-facing documentation."
+    },
+    {
+      "id": "multi_agent_research_workflow",
+      "text": "Design and implement a multi-agent research workflow with task routing, evaluation metrics, rollback rules, and traceable promotion of improved agents."
+    }
+  ]
+}

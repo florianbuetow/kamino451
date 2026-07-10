@@ -1,0 +1,15 @@
+{
+  "route_chosen": "taskgraph",
+  "agent_files_used": [
+    ".kamino/dispatch-queue/fixture/01-article-writing-agent.md",
+    ".kamino/dispatch-queue/fixture/02-article-fact-checking-agent.md",
+    ".kamino/dispatch-queue/fixture/03-article-review-agent.md"
+  ],
+  "agent_blueprints_used": [
+    ".kamino/agents/library/writing/article-writing-agent.md",
+    ".kamino/agents/library/writing/article-fact-checking-agent.md",
+    ".kamino/agents/library/writing/article-review-agent.md"
+  ],
+  "model": "sonnet",
+  "effort": "high"
+}

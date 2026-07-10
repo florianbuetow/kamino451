@@ -1,0 +1,7 @@
+{
+  "schema_version": "kamino451.factory-config.v1",
+  "routing": {
+    "success_rate_threshold": 0.9,
+    "min_attempts_for_rate": 3
+  }
+}

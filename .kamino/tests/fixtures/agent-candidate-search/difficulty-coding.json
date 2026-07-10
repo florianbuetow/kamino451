@@ -1,0 +1,28 @@
+{
+  "binary_search_path": [
+    {
+      "anchor_rank": 3,
+      "anchor_task_id": "prior-coding-close",
+      "outcome": "tie"
+    }
+  ],
+  "estimated_difficulty_score": 0.4,
+  "estimated_insertion_rank": 3,
+  "mode": "similar",
+  "nearest_prior_tasks": [
+    {
+      "distance": 0.02,
+      "task_id": "prior-coding-close"
+    },
+    {
+      "distance": 0.08,
+      "task_id": "prior-coding-rubric-bad"
+    }
+  ],
+  "schema_version": "kamino451.bradley-terry-pairwise-ranking.v1",
+  "status": "complete",
+  "target": {
+    "task_id": "task-current-coding",
+    "task_text": "Implement a small Python CLI and add tests for the new behavior."
+  }
+}

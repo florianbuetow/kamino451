@@ -1,0 +1,37 @@
+{
+  "ambiguity_score": 2,
+  "clarity_score": 4,
+  "completeness_score": 4,
+  "consistency_score": 5,
+  "difficulty_score": 3,
+  "judgement": {
+    "ambiguity_score": 2,
+    "clarity_score": 4,
+    "completeness_score": 4,
+    "consistency_score": 5,
+    "difficulty_score": 3,
+    "human_review_required": false,
+    "reasons": [
+      "task type classified as coding",
+      "routing recommendation is standard_model_task_agent"
+    ],
+    "recommended_mapping": "standard_model_task_agent",
+    "task_type": "coding"
+  },
+  "metrics": {
+    "estimated_token_count": 20,
+    "explicit_requirement_count": 2,
+    "tool_indicator_count": 1
+  },
+  "open_issues": [],
+  "recommended_mapping": "standard_model_task_agent",
+  "schema_version": "kamino451.task-evaluation.v1",
+  "source": {
+    "kind": "inline",
+    "path": null
+  },
+  "task_id": "task-current-coding",
+  "task_text": "Implement a small Python CLI and add tests for the new behavior.",
+  "task_text_hash": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+  "task_type": "coding"
+}

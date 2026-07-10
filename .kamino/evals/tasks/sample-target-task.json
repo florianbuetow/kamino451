@@ -1,0 +1,6 @@
+{
+  "task": {
+    "id": "add_cli_regression_tests",
+    "text": "Add regression tests for a small Python CLI command and verify the command still emits valid JSON for file input."
+  }
+}

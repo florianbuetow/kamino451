@@ -1,0 +1,13 @@
+{
+  "success": true,
+  "reason": "The output includes feedback but only partially addresses revision recommendations.",
+  "satisfied_requirements": [
+    "markdown feedback"
+  ],
+  "missing_requirements": [],
+  "partial_requirements": [
+    "revision recommendations"
+  ],
+  "unverifiable_requirements": [],
+  "confidence": "high"
+}

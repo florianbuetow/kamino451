@@ -1,0 +1,35 @@
+{
+  "comparisons": [
+    {
+      "task_a_id": "format_sentence",
+      "task_b_id": "review_article",
+      "harder_task": "B",
+      "confidence": 0.9,
+      "reasoning": "The review requires judgment and actionable feedback.",
+      "key_factors": [
+        "quality judgment"
+      ]
+    },
+    {
+      "task_a_id": "format_sentence",
+      "task_b_id": "article_pipeline",
+      "harder_task": "B",
+      "confidence": 0.98,
+      "reasoning": "The pipeline requires ordered steps and verification.",
+      "key_factors": [
+        "planning",
+        "verification"
+      ]
+    },
+    {
+      "task_a_id": "review_article",
+      "task_b_id": "article_pipeline",
+      "harder_task": "B",
+      "confidence": 0.94,
+      "reasoning": "The pipeline coordinates multiple agent roles.",
+      "key_factors": [
+        "multi-step execution"
+      ]
+    }
+  ]
+}

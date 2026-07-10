@@ -1,0 +1,64 @@
+{
+  "ambiguity_score": 3,
+  "clarity_score": 1,
+  "completeness_score": 2,
+  "consistency_score": 5,
+  "difficulty_score": 1,
+  "judgement": {
+    "ambiguity_score": 3,
+    "clarity_score": 1,
+    "completeness_score": 2,
+    "consistency_score": 5,
+    "difficulty_score": 1,
+    "human_review_required": false,
+    "reasons": [
+      "26 words, estimated 44 tokens",
+      "readability Flesch=27.51, grade=15.88",
+      "task type classified as research",
+      "routing recommendation is clarification_agent"
+    ],
+    "recommended_mapping": "clarification_agent",
+    "task_type": "research"
+  },
+  "metrics": {
+    "average_sentence_words": 26.0,
+    "bullet_count": 0,
+    "character_count": 177,
+    "constraint_indicator_count": 0,
+    "contradiction_indicator_count": 0,
+    "domain_indicator_count": 0,
+    "estimated_token_count": 44,
+    "explicit_requirement_count": 0,
+    "flesch_kincaid_grade": 15.88,
+    "flesch_reading_ease": 27.51,
+    "input_output_indicator_count": 0,
+    "sentence_count": 1,
+    "success_criteria_indicator_count": 0,
+    "syllable_count": 47,
+    "tool_indicator_count": 0,
+    "vague_term_count": 0,
+    "word_count": 26
+  },
+  "open_issues": [
+    "missing routing or execution context",
+    "missing explicit input or output format",
+    "missing explicit success criteria"
+  ],
+  "recommended_mapping": "clarification_agent",
+  "schema_version": "kamino451.task-evaluation.v1",
+  "score_scale": {
+    "ambiguity_score": "1 = low ambiguity, 5 = high ambiguity",
+    "clarity_score": "1 = unclear, 5 = clear",
+    "completeness_score": "1 = missing key context, 5 = complete enough to route",
+    "consistency_score": "1 = contradictory, 5 = internally consistent",
+    "difficulty_score": "1 = easy, 5 = hard"
+  },
+  "source": {
+    "kind": "inline",
+    "path": null
+  },
+  "task_id": "task-ff7b40468402",
+  "task_text": "Plan a three-step article production pipeline that researches source material, writes a draft, fact-checks claims, and produces a final review report with verification evidence.",
+  "task_text_hash": "sha256:ff7b40468402c6ef53d1fa7aa84a6eb7aa615d01c3671b3a4dc323ed33dd6d9e",
+  "task_type": "research"
+}

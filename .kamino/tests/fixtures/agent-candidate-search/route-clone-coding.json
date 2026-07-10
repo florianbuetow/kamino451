@@ -1,0 +1,11 @@
+{
+  "agent_blueprints_used": [
+    ".kamino/agents/library/coding/python-cli-agent.md"
+  ],
+  "agent_files_used": [
+    ".kamino/dispatch-queue/fixture/01-python-cli-agent.md"
+  ],
+  "effort": "medium",
+  "model": "sonnet",
+  "route_chosen": "clone"
+}

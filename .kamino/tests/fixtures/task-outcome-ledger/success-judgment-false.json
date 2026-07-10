@@ -1,0 +1,14 @@
+{
+  "success": false,
+  "reason": "The output omits the required verification evidence.",
+  "satisfied_requirements": [
+    "markdown feedback",
+    "revision recommendations"
+  ],
+  "missing_requirements": [
+    "verification evidence"
+  ],
+  "partial_requirements": [],
+  "unverifiable_requirements": [],
+  "confidence": "high"
+}

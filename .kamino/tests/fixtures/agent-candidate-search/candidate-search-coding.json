@@ -1,0 +1,44 @@
+{
+  "candidate_count": 1,
+  "candidates": [
+    {
+      "agent_blueprints_used": [
+        ".kamino/agents/library/coding/python-cli-agent.md"
+      ],
+      "agent_files_used": [
+        ".kamino/dispatch-queue/fixture/01-python-cli-agent.md"
+      ],
+      "candidate_id": "candidate-1",
+      "effort": "medium",
+      "historical_success_count": 2,
+      "match_reasons": [
+        "same task_type",
+        "similar pairwise difficulty",
+        "similar semantic difficulty",
+        "similar rubric profile",
+        "route matches task mapping",
+        "repeated successful history"
+      ],
+      "matched_task_types": [
+        "coding"
+      ],
+      "model": "sonnet",
+      "route_chosen": "clone",
+      "similar_prior_tasks": [
+        {
+          "effort": "medium",
+          "model": "sonnet",
+          "record_id": "task-outcome-coding-close-1",
+          "route_chosen": "clone",
+          "task_id": "prior-coding-close",
+          "task_text_excerpt": "Implement a small Python CLI and include focused tests.",
+          "task_type": "coding"
+        }
+      ]
+    }
+  ],
+  "limit": 10,
+  "schema_version": "kamino451.agent-candidate-search.v1",
+  "task_id": "task-current-coding",
+  "task_text_hash": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+}

@@ -1,0 +1,87 @@
+{
+  "candidate_search": {
+    "candidate_count": 1,
+    "candidates": [
+      {
+        "agent_blueprints_used": [
+          ".kamino/agents/library/coding/python-cli-agent.md"
+        ],
+        "agent_files_used": [
+          ".kamino/dispatch-queue/fixture/01-python-cli-agent.md"
+        ],
+        "candidate_id": "candidate-1",
+        "effort": "medium",
+        "historical_success_count": 2,
+        "match_reasons": [
+          "same task_type",
+          "similar pairwise difficulty"
+        ],
+        "matched_task_types": [
+          "coding"
+        ],
+        "model": "sonnet",
+        "route_chosen": "clone",
+        "similar_prior_tasks": [
+          {
+            "effort": "medium",
+            "model": "sonnet",
+            "record_id": "task-outcome-coding-close-1",
+            "route_chosen": "clone",
+            "task_id": "prior-coding-close",
+            "task_text_excerpt": "Implement a small Python CLI and include focused tests.",
+            "task_type": "coding"
+          }
+        ]
+      }
+    ],
+    "limit": 10,
+    "schema_version": "kamino451.agent-candidate-search.v1",
+    "task_id": "task-current-coding",
+    "task_text_hash": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+  },
+  "candidate_search_path": "tests/fixtures/agent-candidate-search/candidate-search-coding.json",
+  "created_at": "2026-06-26T00:00:00Z",
+  "difficulty_placement": {
+    "estimated_difficulty_score": 0.4,
+    "estimated_insertion_rank": 3,
+    "nearest_prior_tasks": [
+      {
+        "distance": 0.02,
+        "task_id": "prior-coding-close"
+      }
+    ],
+    "schema_version": "kamino451.bradley-terry-pairwise-ranking.v1"
+  },
+  "difficulty_placement_path": "tests/fixtures/agent-candidate-search/difficulty-coding.json",
+  "route_decision": {
+    "agent_blueprints_used": [
+      ".kamino/agents/library/coding/python-cli-agent.md"
+    ],
+    "agent_files_used": [
+      ".kamino/dispatch-queue/fixture/01-python-cli-agent.md"
+    ],
+    "effort": "medium",
+    "model": "sonnet",
+    "route_chosen": "clone"
+  },
+  "route_decision_path": "tests/fixtures/agent-candidate-search/route-clone-coding.json",
+  "schema_version": "kamino451.task-detail.v1",
+  "task_evaluation": {
+    "ambiguity_score": 2,
+    "clarity_score": 4,
+    "completeness_score": 4,
+    "consistency_score": 5,
+    "difficulty_score": 3,
+    "open_issues": [],
+    "recommended_mapping": "standard_model_task_agent",
+    "schema_version": "kamino451.task-evaluation.v1",
+    "task_id": "task-current-coding",
+    "task_text": "Implement a small Python CLI and add tests for the new behavior.",
+    "task_text_hash": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "task_type": "coding"
+  },
+  "task_evaluation_path": "tests/fixtures/agent-candidate-search/task-eval-coding.json",
+  "task_id": "task-current-coding",
+  "task_text": "Implement a small Python CLI and add tests for the new behavior.",
+  "task_text_hash": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+}

@@ -1,0 +1,70 @@
+{
+  "comparisons": [
+    {
+      "task_a_id": "format_markdown_sentence",
+      "task_b_id": "python_cli_json",
+      "harder_task": "B",
+      "confidence": 0.95,
+      "reasoning": "The CLI task requires input validation, file handling, and structured output instead of simple formatting.",
+      "key_factors": [
+        "tool use",
+        "verification"
+      ]
+    },
+    {
+      "task_a_id": "format_markdown_sentence",
+      "task_b_id": "package_refactor_tests",
+      "harder_task": "B",
+      "confidence": 0.97,
+      "reasoning": "The refactor requires preserving behavior across a package and proving it with tests.",
+      "key_factors": [
+        "regression risk",
+        "verification"
+      ]
+    },
+    {
+      "task_a_id": "format_markdown_sentence",
+      "task_b_id": "multi_agent_research_workflow",
+      "harder_task": "B",
+      "confidence": 0.99,
+      "reasoning": "The workflow task requires system design, multiple components, and evaluation logic.",
+      "key_factors": [
+        "multi-agent coordination",
+        "planning"
+      ]
+    },
+    {
+      "task_a_id": "python_cli_json",
+      "task_b_id": "package_refactor_tests",
+      "harder_task": "B",
+      "confidence": 0.9,
+      "reasoning": "The refactor has a broader blast radius and stronger regression risk than one CLI.",
+      "key_factors": [
+        "regression risk",
+        "tests"
+      ]
+    },
+    {
+      "task_a_id": "python_cli_json",
+      "task_b_id": "multi_agent_research_workflow",
+      "harder_task": "B",
+      "confidence": 0.98,
+      "reasoning": "The workflow needs architecture, routing, metrics, and rollback behavior beyond a single CLI.",
+      "key_factors": [
+        "architecture",
+        "tool workflow"
+      ]
+    },
+    {
+      "task_a_id": "package_refactor_tests",
+      "task_b_id": "multi_agent_research_workflow",
+      "harder_task": "B",
+      "confidence": 0.9,
+      "reasoning": "The multi-agent workflow spans more design decisions and verification modes than the refactor.",
+      "key_factors": [
+        "multi-agent coordination",
+        "evaluation"
+      ]
+    }
+  ]
+}
