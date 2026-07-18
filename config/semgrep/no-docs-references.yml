@@ -1,0 +1,97 @@
+# Factory boundary enforcement.
+#
+# THE CONTRACT: the factory is exactly two directories, .claude/ and .kamino/.
+# Nothing inside them may reference a file under docs/.
+#
+# docs/ holds gitignored build artifacts - ideation notes, research notes and
+# slide material that served to DESIGN the factory. A factory file that reads or
+# cites one couples the product to its own scaffolding: a fresh clone has no
+# docs/, so the reference dangles.
+#
+# One rule per reference form, so each is independently testable and suppressible.
+# The shared core regex is `docs/` + a path character, NOT preceded by a word
+# character - which is what keeps the prose words "docs" and "documentation", and
+# near-misses like mydocs/ or subdocs/, from matching. `/` is deliberately absent
+# from that exclusion class so `./docs/x.md` and `/abs/path/docs/x.md` still match.
+#
+# These rules live OUTSIDE .claude/ and .kamino/ on purpose: they must name the
+# `docs/` pattern to detect it, and would otherwise flag themselves.
+#
+# Run: semgrep --config config/semgrep/ --error --no-git-ignore \
+#              --scan-unknown-extensions .claude .kamino
+
+rules:
+  - id: kamino.no-docs-reference-python
+    languages: [generic]
+    severity: ERROR
+    message: >
+      Factory boundary violation: Python code inside the factory references a build
+      artifact under 'docs/'. The factory is exactly '.claude/' and '.kamino/'; 'docs/'
+      holds gitignored ideation and research material that served to design it, so this
+      path does not exist in a fresh clone. Move the content into the factory, or drop
+      the read.
+    pattern-regex: '(^|[^A-Za-z0-9_.\-])docs/[A-Za-z0-9._\-]'
+    paths:
+      include:
+        - "/.claude/**/*.py"
+        - "/.kamino/**/*.py"
+      exclude:
+        - "__pycache__/"
+        - ".pytest_cache/"
+        - ".mypy_cache/"
+        - ".ruff_cache/"
+        - ".venv/"
+
+  - id: kamino.no-docs-reference-shell
+    languages: [generic]
+    severity: ERROR
+    message: >
+      Factory boundary violation: a shell script inside the factory references a build
+      artifact under 'docs/'. The factory is exactly '.claude/' and '.kamino/'; 'docs/'
+      is gitignored, so this path does not exist in a fresh clone. Move the content into
+      the factory, or drop the reference.
+    pattern-regex: '(^|[^A-Za-z0-9_.\-])docs/[A-Za-z0-9._\-]'
+    paths:
+      include:
+        - "/.claude/**/*.sh"
+        - "/.kamino/**/*.sh"
+      exclude:
+        - ".venv/"
+
+  - id: kamino.no-docs-reference-markdown
+    languages: [generic]
+    severity: ERROR
+    message: >
+      Factory boundary violation: a Markdown file inside the factory cites a build
+      artifact under 'docs/'. Agent and skill prose is executed as instructions, so a
+      citation pointing at a gitignored file silently changes behaviour in a fresh
+      clone. Move the content into the factory, or drop the citation.
+    pattern-regex: '(^|[^A-Za-z0-9_.\-])docs/[A-Za-z0-9._\-]'
+    paths:
+      include:
+        - "/.claude/**/*.md"
+        - "/.kamino/**/*.md"
+      exclude:
+        - ".venv/"
+        - "node_modules/"
+
+  - id: kamino.no-docs-reference-data
+    languages: [generic]
+    severity: ERROR
+    message: >
+      Factory boundary violation: a data or config file inside the factory references a
+      build artifact under 'docs/'. The factory is exactly '.claude/' and '.kamino/';
+      'docs/' is gitignored, so this path does not exist in a fresh clone.
+    pattern-regex: '(^|[^A-Za-z0-9_.\-])docs/[A-Za-z0-9._\-]'
+    paths:
+      include:
+        - "/.claude/**/*.json"
+        - "/.claude/**/*.yml"
+        - "/.claude/**/*.yaml"
+        - "/.kamino/**/*.json"
+        - "/.kamino/**/*.yml"
+        - "/.kamino/**/*.yaml"
+        - "/.kamino/**/*.html"
+      exclude:
+        - ".venv/"
+        - "node_modules/"

@@ -195,23 +195,6 @@ def test_normal_factory_workflow_does_not_reference_autoresearch_runtime() -> No
             assert forbidden_fragment not in text, f"{relative_path} references {forbidden_fragment}"
 
 
-def test_workflow_documentation_lists_phase_boundaries_and_ledger_paths() -> None:
-    """Documentation should describe compile/run phases, ledger paths, and validation coverage."""
-    workflow_text = read_text("docs/ideation/agent-factory-workflow.md")
-    schema_text = read_text(".kamino/evals/tasks/task-outcome-ledger-schema.md")
-
-    assert "Compile Phase" in workflow_text
-    assert "Run Phase" in workflow_text
-    assert ".kamino/evals/scripts/task_outcome_ledger_read.py" in workflow_text
-    assert ".kamino/evals/scripts/task_outcome_ledger_write.py" in workflow_text
-    assert ".kamino/evals/scripts/agent_candidate_search.py" in workflow_text
-    assert ".kamino/evals/scripts/task_detail_write.py" in workflow_text
-    assert "task_detail_path" in schema_text
-    assert "AutoResearch Boundary" in workflow_text
-    assert "JSONL" in schema_text
-    assert "Partial, missing, or unverifiable completion is always recorded as" in schema_text
-
-
 def test_eval_sweep_skills_exist_with_isolation_contracts() -> None:
     """The new eval-sweep skills should exist, share isolation contracts, and diverge on mode."""
     factory_text = read_text(".claude/skills/evaluate-factory/SKILL.md")

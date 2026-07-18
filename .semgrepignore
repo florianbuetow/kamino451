@@ -1,0 +1,18 @@
+:include .gitignore
+
+# Virtual environments (if not in .gitignore)
+.venv/
+venv/
+
+# Build artifacts
+build/
+dist/
+
+# Cache directories
+.cache/
+
+# NOTE: this file deliberately does NOT exclude tests/. Semgrep's BUILT-IN
+# defaults skip test directories, and those defaults apply only when no
+# .semgrepignore exists. The factory's boundary rules must see .kamino/tests/ —
+# a contract test there is precisely what reaches outside the factory into
+# gitignored docs/. Without this file that violation is silently unscanned.

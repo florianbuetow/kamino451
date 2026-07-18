@@ -12,6 +12,7 @@ help:
     @echo ""
     @printf "\033[0;33mCode quality:\033[0m\n"
     @printf "  %-24s %s\n" "check" "Validate Kamino agent template contracts"
+    @printf "  %-24s %s\n" "boundary" "Check factory boundary with semgrep (no docs/ references)"
     @echo ""
     @printf "\033[0;33mTesting:\033[0m\n"
     @printf "  %-24s %s\n" "test" "Run the pytest suite"
@@ -35,6 +36,13 @@ check:
     @printf "\033[0;32m✓ Kamino agent templates valid\033[0m\n"
     @echo ""
 
+boundary:
+    @echo ""
+    @printf "\033[0;34m=== Checking Factory Boundary (Semgrep) ===\033[0m\n"
+    semgrep --config config/semgrep/ --error --no-git-ignore --scan-unknown-extensions .claude .kamino
+    @printf "\033[0;32m✓ Factory boundary clean: no docs/ references\033[0m\n"
+    @echo ""
+
 test:
     @echo ""
     @printf "\033[0;34m=== Running Test Suite ===\033[0m\n"
@@ -46,6 +54,7 @@ ci:
     @echo ""
     @printf "\033[0;34m=== Running CI Checks ===\033[0m\n"
     just check
+    just boundary
     just test
     @printf "\033[0;32m✓ CI checks passed\033[0m\n"
     @echo ""
