@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## 2026-07-19
+
+### Changed
+
+- Instantiated agents and run reports now land in per-task folders `.kamino/tasks/<task_id>/`.
+
 ## 2026-07-18
 
 ### Added
