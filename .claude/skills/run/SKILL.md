@@ -59,6 +59,7 @@ Prefer `<dispatch_dir>`: it carries `execution-graph.md`, which is the authorita
 .kamino/evals/tasks/outcomes/                    # where run-success-evaluate writes binary judgments
 .kamino/evals/tasks/details/<task_id>.json       # durable task context written before execution
 .kamino/evals/tasks/task-outcome-ledger.jsonl    # written only by task-outcome-record after judgment
+.kamino/tasks/<task_id>/                         # per-task home of the instantiated agent + its run-report.json; for a single-clone ad-hoc set, use it as the dispatch dir (trace.jsonl, run-evidence.json)
 ```
 
 ## Execution model

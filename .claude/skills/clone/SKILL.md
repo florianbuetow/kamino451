@@ -1,13 +1,13 @@
 ---
 name: clone
-description: Selects the best-matching Kamino agent template for a given task, fills its template variables from the provided task and context, verifies no placeholders remain, and writes the completed agent file into the current working directory. Use when the user provides a task and wants a Kamino agent chosen and instantiated, mentions selecting or creating an agent from .kamino/agents, references the kamino agent index, or asks to run template-replace on an agent template.
+description: Selects the best-matching Kamino agent template for a given task, fills its template variables from the provided task and context, verifies no placeholders remain, and writes the completed agent file into the per-task folder .kamino/tasks/<task_id>/. Use when the user provides a task and wants a Kamino agent chosen and instantiated, mentions selecting or creating an agent from .kamino/agents, references the kamino agent index, or asks to run template-replace on an agent template.
 ---
 
 # Clone
 
-Use this skill when the user provides a task and wants the best matching Kamino agent template selected, instantiated, verified, and copied into the current working directory.
+Use this skill when the user provides a task and wants the best matching Kamino agent template selected, instantiated, verified, and copied into the per-task folder `.kamino/tasks/<task_id>/`.
 
-The skill discovers available agents from `.kamino/agents/index.md`, ranks candidate agents, fills the selected agent template, verifies that no template variables remain, and writes the completed agent file to `./`.
+The skill discovers available agents from `.kamino/agents/index.md`, ranks candidate agents, fills the selected agent template, verifies that no template variables remain, and writes the completed agent file to `.kamino/tasks/<task_id>/` (the task id comes from `task-evaluate`; create the folder if it does not exist). All artifacts of one task live together in that folder.
 
 ## Inputs
 
@@ -67,7 +67,7 @@ Agent template files are discovered through `.kamino/agents/index.md`.
 13. Use `.kamino/scripts/template-replace.sh` to replace template variables.
 14. Use `.kamino/scripts/template-replace-completed.sh` to verify completion.
 15. If verification shows any remaining template variables, agent creation failed.
-16. Only copy the completed agent file to `./` after verification succeeds.
+16. Only copy the completed agent file to `.kamino/tasks/<task_id>/` after verification succeeds. When filling `{{OUTPUT_FILE}}`, point it to `.kamino/tasks/<task_id>/run-report.json` unless the task dictates otherwise.
 17. Return a concise summary of the selected agent, ranking rationale, filled variables, and output path.
 
 ## Template Variable Rules
@@ -159,7 +159,7 @@ cp "<selected_agent_file>" "$tmp_dir/"
 13a. If `<model>` / `<effort>` were provided, bind them by editing the copied file's frontmatter `model:` / `effort:` lines (the copy only — the original blueprint is never modified).
 14. Verify the copied file using `.kamino/scripts/template-replace-completed.sh`.
 15. If verification fails, stop and report failure.
-16. If verification succeeds, copy the completed agent Markdown file to `./`.
+16. If verification succeeds, copy the completed agent Markdown file to `.kamino/tasks/<task_id>/` (create the folder if needed).
 17. Return the final result.
 
 ## Failure Conditions
@@ -173,7 +173,7 @@ Agent creation fails if:
 5. `template-replace.sh` fails.
 6. `template-replace-completed.sh` fails.
 7. Any template variables remain after replacement.
-8. The completed file cannot be copied to `./`.
+8. The completed file cannot be copied to `.kamino/tasks/<task_id>/`.
 
 ## Output Format
 
@@ -212,7 +212,7 @@ Return Markdown with this structure:
 
 ## Result
 
-State whether the completed agent file was copied to `./`.
+State whether the completed agent file was copied to `.kamino/tasks/<task_id>/`.
 
 If creation failed, state the exact failure reason.
 ```
@@ -224,4 +224,4 @@ The skill succeeds only when:
 1. The best matching agent was selected.
 2. All required template variables were replaced.
 3. Verification confirms that no template variables remain.
-4. The completed agent Markdown file exists in `./`.
+4. The completed agent Markdown file exists in `.kamino/tasks/<task_id>/`.
