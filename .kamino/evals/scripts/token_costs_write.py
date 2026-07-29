@@ -98,6 +98,47 @@ def usage_totals(calls: list[dict]) -> dict[str, int]:
     return totals
 
 
+def content_chars(content: object) -> int:
+    """Character count of a message content field: plain string or content-block list."""
+    if isinstance(content, str):
+        return len(content)
+    total = 0
+    if isinstance(content, list):
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            block_type = block.get("type")
+            if block_type == "text":
+                total += len(str(block.get("text") or ""))
+            elif block_type == "thinking":
+                total += len(str(block.get("thinking") or ""))
+            elif block_type == "tool_result":
+                total += content_chars(block.get("content"))
+            elif block_type == "tool_use":
+                total += len(json.dumps(block.get("input", {}), ensure_ascii=False))
+    return total
+
+
+def estimate_block(entries: list[dict], calls: list[dict]) -> dict:
+    """Chars/4 rule of thumb over the agent's actual traffic: user-side content
+    (prompts and tool results) in, deduped assistant content out. Counts unique
+    content once — no per-call history resends, no harness system prompt — so it
+    understates; measured usage stays authoritative when present."""
+    input_chars = sum(
+        content_chars((entry.get("message") or {}).get("content"))
+        for entry in entries
+        if entry.get("type") == "user"
+    )
+    output_chars = sum(content_chars(call["content"]) for call in calls)
+    return {
+        "input_chars": input_chars,
+        "output_chars": output_chars,
+        "chars_per_token": CHARS_PER_TOKEN,
+        "input_tokens": math.ceil(input_chars / CHARS_PER_TOKEN),
+        "output_tokens": math.ceil(output_chars / CHARS_PER_TOKEN),
+    }
+
+
 def first_user_text(entries: list[dict]) -> str:
     """The dispatch prompt: first user message, or the enqueued prompt of a claude -p session."""
     for entry in entries:
@@ -215,14 +256,20 @@ def resolve_pricing(pricing: dict, short_model: str, model_ids: set[str]) -> tup
     raise SystemExit(f"no pricing entry covers model '{short_model}' / transcript ids {sorted(model_ids)}")
 
 
-def cost_block(measured: dict[str, int], pricing_model: str, entry: dict) -> dict:
-    billable_input = (
-        measured["input_tokens"] + measured["cache_creation_input_tokens"] + measured["cache_read_input_tokens"]
-    )
+def cost_block(measured: dict[str, int], estimated: dict, pricing_model: str, entry: dict) -> dict:
+    basis = "measured" if any(measured.values()) else "estimated"
+    if basis == "measured":
+        billable_input = (
+            measured["input_tokens"] + measured["cache_creation_input_tokens"] + measured["cache_read_input_tokens"]
+        )
+        output_tokens = measured["output_tokens"]
+    else:
+        billable_input = estimated["input_tokens"]
+        output_tokens = estimated["output_tokens"]
     input_usd = round(billable_input * float(entry["input_per_mtok"]) / 1_000_000, 6)
-    output_usd = round(measured["output_tokens"] * float(entry["output_per_mtok"]) / 1_000_000, 6)
+    output_usd = round(output_tokens * float(entry["output_per_mtok"]) / 1_000_000, 6)
     return {
-        "basis": "measured",
+        "basis": basis,
         "pricing_model": pricing_model,
         "billable_input_tokens": billable_input,
         "input": input_usd,
@@ -233,6 +280,13 @@ def cost_block(measured: dict[str, int], pricing_model: str, entry: dict) -> dic
 
 def build_totals(steps: list[dict]) -> dict:
     measured = {key: sum(step["measured"][key] for step in steps) for key in USAGE_KEYS}
+    estimated = {
+        "input_chars": sum(step["estimated"]["input_chars"] for step in steps),
+        "output_chars": sum(step["estimated"]["output_chars"] for step in steps),
+        "chars_per_token": CHARS_PER_TOKEN,
+        "input_tokens": sum(step["estimated"]["input_tokens"] for step in steps),
+        "output_tokens": sum(step["estimated"]["output_tokens"] for step in steps),
+    }
     by_model: dict[str, float] = {}
     for step in steps:
         name = step["cost_usd"].get("pricing_model")
@@ -244,7 +298,7 @@ def build_totals(steps: list[dict]) -> dict:
         "total": round(sum(step["cost_usd"]["total"] for step in steps), 6),
         "by_model": by_model,
     }
-    return {"measured": measured, "cost_usd": cost}
+    return {"measured": measured, "estimated": estimated, "cost_usd": cost}
 
 
 def main(argv: list[str]) -> int:
@@ -272,6 +326,7 @@ def main(argv: list[str]) -> int:
         source_path, entries = match_transcript(transcripts_root, record, run_id)
         calls = deduped_assistant_calls(entries)
         measured = usage_totals(calls)
+        estimated = estimate_block(entries, calls)
         model_ids = {call["model_id"] for call in calls}
         pricing_model, entry = resolve_pricing(pricing, str(record["model"]), model_ids)
         steps.append(
@@ -286,7 +341,8 @@ def main(argv: list[str]) -> int:
                 "transcript_path": None,
                 "api_calls": len(calls),
                 "measured": measured,
-                "cost_usd": cost_block(measured, pricing_model, entry),
+                "estimated": estimated,
+                "cost_usd": cost_block(measured, estimated, pricing_model, entry),
             }
         )
 

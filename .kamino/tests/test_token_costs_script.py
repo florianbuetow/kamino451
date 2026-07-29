@@ -177,3 +177,45 @@ def test_unpriced_model_fails_loudly(tmp_path):
     result = run_token_costs(run_dir, transcripts_root, config)
     assert result.returncode != 0
     assert "pricing" in result.stderr
+
+
+def test_char_estimate_counts_actual_agent_traffic(tmp_path):
+    agent_file = str(tmp_path / "dispatch" / RUN_ID / "01-agent.md")
+    run_dir = build_capsule(tmp_path, records=[trace_record(agent_file)])
+    transcripts_root = tmp_path / "projects"
+    write_jsonl(transcripts_root / "aaaa-session" / "subagents" / "agent-a1.jsonl", transcript_entries(agent_file))
+    config = pricing_config(tmp_path / "config.json")
+
+    result = run_token_costs(run_dir, transcripts_root, config)
+    assert result.returncode == 0, result.stderr
+
+    payload = json.loads((run_dir / "token_costs.json").read_text(encoding="utf-8"))
+    step = payload["steps"][0]
+    prompt = f"You are the agent defined in the file {agent_file}. Read that file NOW."
+    # Input side: the one user message. Output side: final snapshots of the two
+    # real calls ("working now" + "done, wrote the file"); duplicates and synthetic excluded.
+    assert step["estimated"]["input_chars"] == len(prompt)
+    assert step["estimated"]["output_chars"] == len("working now") + len("done, wrote the file")
+    assert step["estimated"]["chars_per_token"] == 4
+    assert step["estimated"]["input_tokens"] == -(-len(prompt) // 4)
+    assert payload["totals"]["estimated"]["input_chars"] == len(prompt)
+
+
+def test_estimated_basis_when_usage_is_absent(tmp_path):
+    agent_file = str(tmp_path / "dispatch" / RUN_ID / "01-agent.md")
+    run_dir = build_capsule(tmp_path, records=[trace_record(agent_file)])
+    transcripts_root = tmp_path / "projects"
+    entries = transcript_entries(agent_file)
+    for entry in entries:
+        if entry["type"] == "assistant":
+            entry["message"]["usage"] = {key: 0 for key in entry["message"]["usage"]}
+    write_jsonl(transcripts_root / "aaaa-session" / "subagents" / "agent-a1.jsonl", entries)
+    config = pricing_config(tmp_path / "config.json")
+
+    result = run_token_costs(run_dir, transcripts_root, config)
+    assert result.returncode == 0, result.stderr
+
+    step = json.loads((run_dir / "token_costs.json").read_text(encoding="utf-8"))["steps"][0]
+    assert step["cost_usd"]["basis"] == "estimated"
+    assert step["cost_usd"]["billable_input_tokens"] == step["estimated"]["input_tokens"]
+    assert step["cost_usd"]["total"] > 0
