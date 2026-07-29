@@ -36,6 +36,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--attempt", type=int, default=1, help="Attempt number. Defaults to 1.")
     parser.add_argument("--ledger", default=str(TASKS / "task-outcome-ledger.jsonl"), help="Ledger JSONL to append to.")
     parser.add_argument("--tasks-root", default=str(TASKS), help="Eval tasks root holding details/ and outcomes/. Defaults to the repo's.")
+    parser.add_argument("--transcripts-root", default=None,
+                        help="Claude Code transcript directory for token accounting. Defaults to this repo's.")
     parser.add_argument("--format", choices=["json"], required=True, help="Output format.")
     return parser
 
@@ -155,6 +157,22 @@ def main(argv: list[str]) -> int:
     evidence_path = run_dir / "run-evidence.json"
     evidence_path.write_text(json.dumps(evidence, indent=2, sort_keys=True), encoding="utf-8")
 
+    token_costs_path: str | None = None
+    token_command = [
+        "uv", "run", str(REPO / ".kamino" / "evals" / "scripts" / "token_costs_write.py"),
+        "--run-dir", str(run_dir),
+        "--format", "json",
+    ]
+    if args.transcripts_root:
+        token_command[5:5] = ["--transcripts-root", args.transcripts_root]
+    token_result = run(token_command, check=False)
+    if token_result.returncode == 0:
+        token_costs_path = json.loads(token_result.stdout)["output"]
+    else:
+        # Non-fatal by design: outcome recording must not depend on transcript
+        # availability, but the failure is surfaced, never swallowed.
+        print(f"token accounting failed: {token_result.stderr.strip()}", file=sys.stderr)
+
     tasks_root = Path(args.tasks_root).resolve()
     suffix = "" if args.attempt == 1 else f"-a{args.attempt}"
     judgment_path = tasks_root / "outcomes" / f"{args.task_id}{suffix}-success.json"
@@ -185,6 +203,7 @@ def main(argv: list[str]) -> int:
                 "record_id": ledger_out["record_id"],
                 "record_sequence": ledger_out["record_sequence"],
                 "success": ledger_out["success"],
+                "token_costs": token_costs_path,
             },
             indent=2,
             sort_keys=True,

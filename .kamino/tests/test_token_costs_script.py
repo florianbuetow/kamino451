@@ -263,3 +263,17 @@ def test_ambiguous_transcript_match_fails_loudly(tmp_path):
     result = run_token_costs(run_dir, transcripts_root, config)
     assert result.returncode != 0
     assert "ambiguous transcript match" in result.stderr
+
+
+def test_record_run_payload_reports_token_costs_status(tmp_path):
+    # record_run must accept --transcripts-root and surface token accounting
+    # without letting a token failure block outcome recording.
+    result = subprocess.run(
+        ["uv", "run", ".kamino/evals/scripts/record_run.py", "--help"],
+        capture_output=True,
+        text=True,
+        cwd=repo_root(),
+        check=False,
+    )
+    assert result.returncode == 0
+    assert "--transcripts-root" in result.stdout

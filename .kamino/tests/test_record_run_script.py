@@ -30,6 +30,24 @@ def utc_now_iso() -> str:
     return datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
+def seed_transcript(run_dir: Path, transcripts_root: Path, started_at: str) -> None:
+    """Write a minimal subagent transcript matching the capsule's agent file."""
+    agent_file = next(run_dir.glob("01-*.md"))
+    entries = [
+        {"type": "user", "timestamp": started_at,
+         "message": {"role": "user",
+                     "content": f"You are the agent defined in the file {agent_file}. Read that file NOW."}},
+        {"type": "assistant", "timestamp": started_at,
+         "message": {"id": "msg_t", "model": "claude-haiku-4-5-20251001",
+                     "usage": {"input_tokens": 10, "output_tokens": 50,
+                               "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0},
+                     "content": [{"type": "text", "text": "solution written"}]}},
+    ]
+    target = transcripts_root / "test-session" / "subagents" / "agent-t1.jsonl"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("\n".join(json.dumps(entry) for entry in entries) + "\n", encoding="utf-8")
+
+
 DEMO_TASK_ID = "9-demo-task"
 DEMO_EVAL_ID = "task-demo123"
 DEMO_ATTEMPT = 2
@@ -234,34 +252,38 @@ def run_record(
     ledger: Path,
     tasks_root: Path,
     started_at: str,
+    transcripts_root: Path | None = None,
+    model: str = "sonnet",
 ) -> subprocess.CompletedProcess[str]:
     """Run record_run.py through uv run with this file's fixed demo identifiers."""
+    command = [
+        "uv",
+        "run",
+        ".kamino/evals/scripts/record_run.py",
+        "--task-id",
+        DEMO_EVAL_ID,
+        "--run-dir",
+        str(run_dir),
+        "--model",
+        model,
+        "--effort",
+        "high",
+        "--started-at",
+        started_at,
+        "--ended-at",
+        "now",
+        "--attempt",
+        str(DEMO_ATTEMPT),
+        "--ledger",
+        str(ledger),
+        "--tasks-root",
+        str(tasks_root),
+    ]
+    if transcripts_root is not None:
+        command.extend(["--transcripts-root", str(transcripts_root)])
+    command.extend(["--format", "json"])
     return subprocess.run(
-        [
-            "uv",
-            "run",
-            ".kamino/evals/scripts/record_run.py",
-            "--task-id",
-            DEMO_EVAL_ID,
-            "--run-dir",
-            str(run_dir),
-            "--model",
-            "sonnet",
-            "--effort",
-            "high",
-            "--started-at",
-            started_at,
-            "--ended-at",
-            "now",
-            "--attempt",
-            str(DEMO_ATTEMPT),
-            "--ledger",
-            str(ledger),
-            "--tasks-root",
-            str(tasks_root),
-            "--format",
-            "json",
-        ],
+        command,
         cwd=repo_root(),
         capture_output=True,
         text=True,
@@ -278,14 +300,26 @@ def test_record_run_marks_a_correct_solution_successful(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     ledger = base / "ledger.jsonl"
+    started_at = utc_now_iso()
+    transcripts_root = base / "transcripts"
+    seed_transcript(run_dir, transcripts_root, started_at)
 
-    process = run_record(run_dir=run_dir, ledger=ledger, tasks_root=tasks_root, started_at=utc_now_iso())
+    process = run_record(
+        run_dir=run_dir,
+        ledger=ledger,
+        tasks_root=tasks_root,
+        started_at=started_at,
+        transcripts_root=transcripts_root,
+        model="haiku",
+    )
 
     assert process.returncode == 0, process.stderr
     payload = json.loads(process.stdout)
     assert payload["success"] is True
     assert payload["tests_passed"] is True
     assert payload["status"] == "ok"
+    assert payload["token_costs"] == str(run_dir / "token_costs.json")
+    assert (run_dir / "token_costs.json").is_file()
 
     ledger_lines = ledger.read_text(encoding="utf-8").splitlines()
     assert len(ledger_lines) == 1
@@ -326,3 +360,29 @@ def test_record_run_marks_a_missing_solution_failed(tmp_path: Path) -> None:
     payload = json.loads(process.stdout)
     assert payload["status"] == "failed"
     assert payload["tests_passed"] is False
+
+
+def test_record_run_keeps_recording_when_token_accounting_fails(tmp_path: Path) -> None:
+    """A missing transcript must not block outcome recording."""
+    base = tmp_path / "d"
+    run_dir, tasks_root = compile_fresh_run(base)
+    (run_dir / "work" / "solution.py").write_text(
+        "class Solution:\n    def demo(self, xs) -> int:\n        return sum(xs)\n",
+        encoding="utf-8",
+    )
+    ledger = base / "ledger.jsonl"
+    transcripts_root = base / "empty-transcripts"
+    transcripts_root.mkdir()
+
+    process = run_record(
+        run_dir=run_dir,
+        ledger=ledger,
+        tasks_root=tasks_root,
+        started_at=utc_now_iso(),
+        transcripts_root=transcripts_root,
+    )
+
+    assert process.returncode == 0, process.stderr
+    payload = json.loads(process.stdout)
+    assert payload["token_costs"] is None
+    assert not (run_dir / "token_costs.json").is_file()
