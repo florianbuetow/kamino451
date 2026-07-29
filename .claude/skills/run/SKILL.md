@@ -109,7 +109,7 @@ uv run .kamino/evals/scripts/run_trace_write.py --trace "<dispatch_dir>/trace.js
 5. For each step, in order:
    1. **Pre-flight** — confirm all input files exist and are non-empty.
    2. **Skip check** — if the output already exists and passes post-flight checks and `<force>` is not set, mark `SKIPPED`, emit the step's trace record (Rule 7a, status `skipped`), and continue.
-   3. **Dispatch** — record the start time, then run the agent body as a subagent using its `model`. Capture the subagent's returned result.
+   3. **Dispatch** — record the start time, then dispatch the agent to a subagent using the dispatch instruction from the Execution model section (the prompt names the agent file's absolute path), with the agent's frontmatter `model` and `effort`. Capture the subagent's returned result.
    4. **Post-flight** — apply every check in Rule 6, including the step's verification command when the graph declares one.
    5. **Trace** — append the step's trace record per Rule 7a.
    6. On pass → mark `OK` and continue. On fail → mark `FAILED`, stop the pipeline (after its trace record is written).
