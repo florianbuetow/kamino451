@@ -344,8 +344,12 @@ capsule as `token_costs.json` (schema `kamino451.token-costs.v1`):
   totals do not depend on any file still existing at evaluation time.
 - **Costs** are derived deterministically from the `pricing` table in
   `.kamino/factory-config.json` (USD per 1M input/output tokens per model).
-  Cache-read and cache-creation tokens are billed at the input rate; the raw
-  breakdown is preserved in the file.
+  When a model's pricing entry carries cache rates (`cache_read_per_mtok`,
+  `cache_write_5m_per_mtok`, `cache_write_1h_per_mtok`), cache reads and
+  writes are billed at those rates, with cache writes split by TTL from the
+  transcript's `cache_creation` breakdown; entries without cache rates bill
+  all input-side tokens at the flat input rate. The raw token breakdown is
+  preserved in the file either way.
 
 Both `run` and the corpus sweeps invoke the writer automatically. To recompute
 for an existing capsule while its transcripts still exist:

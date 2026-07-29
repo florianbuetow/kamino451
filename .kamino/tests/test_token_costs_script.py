@@ -16,11 +16,19 @@ def test_factory_config_has_pricing_for_model_ladder():
     config = json.loads((repo_root() / ".kamino" / "factory-config.json").read_text(encoding="utf-8"))
     pricing = config["pricing"]
     assert pricing["currency"] == "USD"
-    for name in ("haiku", "sonnet", "opus"):
+    for name in ("haiku", "sonnet", "opus", "fable"):
         entry = pricing["models"][name]
         assert entry["model_ids"], f"{name} needs at least one API model id"
-        assert entry["input_per_mtok"] > 0
-        assert entry["output_per_mtok"] > 0
+        for key in (
+            "input_per_mtok",
+            "output_per_mtok",
+            "cache_read_per_mtok",
+            "cache_write_5m_per_mtok",
+            "cache_write_1h_per_mtok",
+        ):
+            assert entry[key] > 0, f"{name} needs positive {key}"
+    assert "claude-opus-5" in pricing["models"]["opus"]["model_ids"]
+    assert "claude-fable-5" in pricing["models"]["fable"]["model_ids"]
 
 
 RUN_ID = "260720-100000"
@@ -33,16 +41,23 @@ def write_jsonl(path: Path, entries: list[dict]) -> None:
     path.write_text("\n".join(json.dumps(entry) for entry in entries) + "\n", encoding="utf-8")
 
 
-def pricing_config(path: Path) -> Path:
+def pricing_config(path: Path, *, cache_rates: bool = False) -> Path:
     """Write a minimal factory config with easy-math pricing (haiku 1.0/5.0 per Mtok)."""
+    entry = {"model_ids": [MODEL_ID], "input_per_mtok": 1.0, "output_per_mtok": 5.0}
+    if cache_rates:
+        entry.update(
+            {
+                "cache_read_per_mtok": 0.10,
+                "cache_write_5m_per_mtok": 1.25,
+                "cache_write_1h_per_mtok": 2.0,
+            }
+        )
     payload = {
         "schema_version": "kamino451.factory-config.v1",
         "routing": {"success_rate_threshold": 0.9, "min_attempts_for_rate": 3},
         "pricing": {
             "currency": "USD",
-            "models": {
-                "haiku": {"model_ids": [MODEL_ID], "input_per_mtok": 1.0, "output_per_mtok": 5.0},
-            },
+            "models": {"haiku": entry},
         },
     }
     path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
@@ -341,3 +356,68 @@ def test_session_block_counts_unique_tokens_once(tmp_path):
     assert payload["steps"][0]["session"] == {"unique_input_tokens": 515, "unique_output_tokens": 300}
     assert payload["steps"][1]["session"] == {"unique_input_tokens": 0, "unique_output_tokens": 0}
     assert payload["totals"]["session"] == {"unique_input_tokens": 515, "unique_output_tokens": 300}
+
+
+def transcript_entries_with_ttl_split(agent_file: str) -> list[dict]:
+    """The standard transcript, with msg_a's 500 cache-creation tokens split 100 (5m) / 400 (1h)."""
+    entries = transcript_entries(agent_file)
+    entries[2]["message"]["usage"] = dict(
+        entries[2]["message"]["usage"],
+        cache_creation={"ephemeral_5m_input_tokens": 100, "ephemeral_1h_input_tokens": 400},
+    )
+    return entries
+
+
+def test_cache_aware_rates_bill_cache_reads_and_writes(tmp_path):
+    agent_file = str(tmp_path / "dispatch" / RUN_ID / "01-agent.md")
+    run_dir = build_capsule(tmp_path, records=[trace_record(agent_file)])
+    transcripts_root = tmp_path / "projects"
+    write_jsonl(transcripts_root / "aaaa-session" / "subagents" / "agent-a1.jsonl", transcript_entries(agent_file))
+    config = pricing_config(tmp_path / "config.json", cache_rates=True)
+
+    result = run_token_costs(run_dir, transcripts_root, config)
+    assert result.returncode == 0, result.stderr
+
+    step = json.loads((run_dir / "token_costs.json").read_text(encoding="utf-8"))["steps"][0]
+    # input 15 @ 1.0 + cache_read 3000 @ 0.10 + cache_creation 500 (no TTL
+    # breakdown -> all 5m) @ 1.25 = 0.000015 + 0.0003 + 0.000625 = 0.00094
+    assert step["cost_usd"]["cache_aware"] is True
+    assert step["cost_usd"]["input"] == 0.00094
+    assert step["cost_usd"]["output"] == 0.0015
+    assert step["cost_usd"]["total"] == 0.00244
+    assert step["cost_usd"]["billable_input_tokens"] == 3515
+
+
+def test_cache_creation_ttl_split_uses_configured_write_rates(tmp_path):
+    agent_file = str(tmp_path / "dispatch" / RUN_ID / "01-agent.md")
+    run_dir = build_capsule(tmp_path, records=[trace_record(agent_file)])
+    transcripts_root = tmp_path / "projects"
+    write_jsonl(
+        transcripts_root / "aaaa-session" / "subagents" / "agent-a1.jsonl",
+        transcript_entries_with_ttl_split(agent_file),
+    )
+    config = pricing_config(tmp_path / "config.json", cache_rates=True)
+
+    result = run_token_costs(run_dir, transcripts_root, config)
+    assert result.returncode == 0, result.stderr
+
+    step = json.loads((run_dir / "token_costs.json").read_text(encoding="utf-8"))["steps"][0]
+    # input 15 @ 1.0 + cache_read 3000 @ 0.10 + 100 @ 1.25 + 400 @ 2.0
+    # = 0.000015 + 0.0003 + 0.000125 + 0.0008 = 0.00124
+    assert step["cost_usd"]["input"] == 0.00124
+    assert step["cost_usd"]["total"] == 0.00274
+
+
+def test_partial_cache_rates_fail_loudly(tmp_path):
+    agent_file = str(tmp_path / "dispatch" / RUN_ID / "01-agent.md")
+    run_dir = build_capsule(tmp_path, records=[trace_record(agent_file)])
+    transcripts_root = tmp_path / "projects"
+    write_jsonl(transcripts_root / "aaaa-session" / "subagents" / "agent-a1.jsonl", transcript_entries(agent_file))
+    config_path = tmp_path / "config.json"
+    payload = json.loads(pricing_config(config_path).read_text(encoding="utf-8"))
+    payload["pricing"]["models"]["haiku"]["cache_read_per_mtok"] = 0.10  # partial: only one of three
+    config_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+
+    result = run_token_costs(run_dir, transcripts_root, config_path)
+    assert result.returncode != 0
+    assert "all of" in result.stderr

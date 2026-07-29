@@ -8,19 +8,36 @@
     "currency": "USD",
     "models": {
       "haiku": {
-        "model_ids": ["claude-haiku-4-5-20251001"],
+        "model_ids": ["claude-haiku-4-5-20251001", "claude-haiku-4-5"],
         "input_per_mtok": 1.0,
-        "output_per_mtok": 5.0
+        "output_per_mtok": 5.0,
+        "cache_read_per_mtok": 0.10,
+        "cache_write_5m_per_mtok": 1.25,
+        "cache_write_1h_per_mtok": 2.0
       },
       "sonnet": {
-        "model_ids": ["claude-sonnet-5", "claude-sonnet-4-5"],
+        "model_ids": ["claude-sonnet-5", "claude-sonnet-4-6", "claude-sonnet-4-5"],
         "input_per_mtok": 3.0,
-        "output_per_mtok": 15.0
+        "output_per_mtok": 15.0,
+        "cache_read_per_mtok": 0.30,
+        "cache_write_5m_per_mtok": 3.75,
+        "cache_write_1h_per_mtok": 6.0
       },
       "opus": {
-        "model_ids": ["claude-opus-4-8", "claude-opus-4-5"],
+        "model_ids": ["claude-opus-5", "claude-opus-4-8", "claude-opus-4-7", "claude-opus-4-6", "claude-opus-4-5"],
         "input_per_mtok": 5.0,
-        "output_per_mtok": 25.0
+        "output_per_mtok": 25.0,
+        "cache_read_per_mtok": 0.50,
+        "cache_write_5m_per_mtok": 6.25,
+        "cache_write_1h_per_mtok": 10.0
+      },
+      "fable": {
+        "model_ids": ["claude-fable-5", "claude-mythos-5"],
+        "input_per_mtok": 10.0,
+        "output_per_mtok": 50.0,
+        "cache_read_per_mtok": 1.0,
+        "cache_write_5m_per_mtok": 12.5,
+        "cache_write_1h_per_mtok": 20.0
       }
     }
   }

@@ -29,6 +29,7 @@ MATCH_WINDOW_SECONDS = 120
 PROBE_BYTES = 262144
 USAGE_KEYS = ("input_tokens", "output_tokens", "cache_creation_input_tokens", "cache_read_input_tokens")
 TRACE_KEYS = ("run_id", "step", "attempt", "agent_file", "model", "status", "started_at", "ended_at")
+CACHE_RATE_KEYS = ("cache_read_per_mtok", "cache_write_5m_per_mtok", "cache_write_1h_per_mtok")
 
 
 def default_transcripts_root() -> Path:
@@ -107,6 +108,27 @@ def session_block(measured: dict[str, int]) -> dict[str, int]:
         "unique_input_tokens": measured["input_tokens"] + measured["cache_creation_input_tokens"],
         "unique_output_tokens": measured["output_tokens"],
     }
+
+
+def cache_creation_split(calls: list[dict]) -> dict[str, int]:
+    """Split cache-creation tokens by TTL. Transcript usage objects carry a
+    per-call cache_creation sub-object with the 5m/1h breakdown; when it is
+    absent or inconsistent, all creation tokens are attributed to the default
+    5-minute TTL."""
+    split = {"5m": 0, "1h": 0}
+    for call in calls:
+        usage = call["usage"]
+        total = int(usage.get("cache_creation_input_tokens") or 0)
+        breakdown = usage.get("cache_creation")
+        if isinstance(breakdown, dict):
+            five_minute = int(breakdown.get("ephemeral_5m_input_tokens") or 0)
+            one_hour = int(breakdown.get("ephemeral_1h_input_tokens") or 0)
+            if five_minute + one_hour == total:
+                split["5m"] += five_minute
+                split["1h"] += one_hour
+                continue
+        split["5m"] += total
+    return split
 
 
 def content_chars(content: object) -> int:
@@ -257,6 +279,12 @@ def load_pricing(config_path: Path) -> dict:
         for key in ("input_per_mtok", "output_per_mtok"):
             if not isinstance(entry.get(key), (int, float)) or entry[key] <= 0:
                 raise SystemExit(f"pricing model '{name}' needs positive {key}")
+        cache_keys_present = [key for key in CACHE_RATE_KEYS if key in entry]
+        if cache_keys_present and len(cache_keys_present) != len(CACHE_RATE_KEYS):
+            raise SystemExit(f"pricing model '{name}' must set all of {CACHE_RATE_KEYS} or none")
+        for key in cache_keys_present:
+            if not isinstance(entry[key], (int, float)) or entry[key] <= 0:
+                raise SystemExit(f"pricing model '{name}' needs positive {key}")
     return pricing
 
 
@@ -280,22 +308,44 @@ def resolve_pricing(pricing: dict, short_model: str, model_ids: set[str]) -> tup
     raise SystemExit(f"no pricing entry covers model '{short_model}' / transcript ids {sorted(model_ids)}")
 
 
-def cost_block(measured: dict[str, int], estimated: dict, pricing_model: str, entry: dict) -> dict:
+def cost_block(
+    measured: dict[str, int],
+    estimated: dict,
+    pricing_model: str,
+    entry: dict,
+    cache_split: dict[str, int],
+) -> dict:
     basis = "measured" if any(measured.values()) else "estimated"
+    input_rate = float(entry["input_per_mtok"])
+    has_cache_rates = all(key in entry for key in CACHE_RATE_KEYS)
     if basis == "measured":
         billable_input = (
             measured["input_tokens"] + measured["cache_creation_input_tokens"] + measured["cache_read_input_tokens"]
         )
         output_tokens = measured["output_tokens"]
+        if has_cache_rates:
+            input_usd = round(
+                (
+                    measured["input_tokens"] * input_rate
+                    + measured["cache_read_input_tokens"] * float(entry["cache_read_per_mtok"])
+                    + cache_split["5m"] * float(entry["cache_write_5m_per_mtok"])
+                    + cache_split["1h"] * float(entry["cache_write_1h_per_mtok"])
+                )
+                / 1_000_000,
+                6,
+            )
+        else:
+            input_usd = round(billable_input * input_rate / 1_000_000, 6)
     else:
         billable_input = estimated["input_tokens"]
         output_tokens = estimated["output_tokens"]
-    input_usd = round(billable_input * float(entry["input_per_mtok"]) / 1_000_000, 6)
+        input_usd = round(billable_input * input_rate / 1_000_000, 6)
     output_usd = round(output_tokens * float(entry["output_per_mtok"]) / 1_000_000, 6)
     return {
         "basis": basis,
         "pricing_model": pricing_model,
         "billable_input_tokens": billable_input,
+        "cache_aware": basis == "measured" and has_cache_rates,
         "input": input_usd,
         "output": output_usd,
         "total": round(input_usd + output_usd, 6),
@@ -318,7 +368,7 @@ def skipped_entry(record: dict) -> dict:
         "session": {"unique_input_tokens": 0, "unique_output_tokens": 0},
         "estimated": {"input_chars": 0, "output_chars": 0, "chars_per_token": CHARS_PER_TOKEN,
                       "input_tokens": 0, "output_tokens": 0},
-        "cost_usd": {"basis": "none", "pricing_model": None, "billable_input_tokens": 0,
+        "cost_usd": {"basis": "none", "pricing_model": None, "cache_aware": False, "billable_input_tokens": 0,
                      "input": 0.0, "output": 0.0, "total": 0.0},
     }
 
@@ -389,6 +439,7 @@ def main(argv: list[str]) -> int:
         calls = deduped_assistant_calls(entries)
         measured = usage_totals(calls)
         estimated = estimate_block(entries, calls)
+        cache_split = cache_creation_split(calls)
         model_ids = {call["model_id"] for call in calls}
         pricing_model, entry = resolve_pricing(pricing, str(record["model"]), model_ids)
         steps.append(
@@ -405,7 +456,7 @@ def main(argv: list[str]) -> int:
                 "measured": measured,
                 "session": session_block(measured),
                 "estimated": estimated,
-                "cost_usd": cost_block(measured, estimated, pricing_model, entry),
+                "cost_usd": cost_block(measured, estimated, pricing_model, entry, cache_split),
             }
         )
 
