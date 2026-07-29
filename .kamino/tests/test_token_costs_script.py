@@ -319,3 +319,25 @@ def test_unpriced_short_model_fails_loudly(tmp_path):
     result = run_token_costs(run_dir, transcripts_root, config)
     assert result.returncode != 0
     assert "no pricing entry covers model" in result.stderr
+
+
+def test_session_block_counts_unique_tokens_once(tmp_path):
+    agent_file = str(tmp_path / "dispatch" / RUN_ID / "01-agent.md")
+    records = [
+        trace_record(agent_file),
+        trace_record(str(tmp_path / "dispatch" / RUN_ID / "02-agent.md"), step=2, status="skipped"),
+    ]
+    run_dir = build_capsule(tmp_path, records=records)
+    transcripts_root = tmp_path / "projects"
+    write_jsonl(transcripts_root / "aaaa-session" / "subagents" / "agent-a1.jsonl", transcript_entries(agent_file))
+    config = pricing_config(tmp_path / "config.json")
+
+    result = run_token_costs(run_dir, transcripts_root, config)
+    assert result.returncode == 0, result.stderr
+
+    payload = json.loads((run_dir / "token_costs.json").read_text(encoding="utf-8"))
+    # Fixture usage: input 15, cache_creation 500, cache_read 3000, output 300.
+    # unique input = 15 + 500 (history resends in cache_read are excluded).
+    assert payload["steps"][0]["session"] == {"unique_input_tokens": 515, "unique_output_tokens": 300}
+    assert payload["steps"][1]["session"] == {"unique_input_tokens": 0, "unique_output_tokens": 0}
+    assert payload["totals"]["session"] == {"unique_input_tokens": 515, "unique_output_tokens": 300}

@@ -336,6 +336,12 @@ capsule as `token_costs.json` (schema `kamino451.token-costs.v1`):
   matched transcript is copied into the capsule under `transcripts/`.
 - **Estimated** numbers apply the chars/4 rule of thumb to the same
   conversation traffic and serve as a cross-check and fallback.
+- **Session** numbers count every piece of content once over the whole agent
+  session: unique input is `input_tokens + cache_creation_input_tokens`
+  (conversation-history resends land in `cache_read_input_tokens` and are
+  excluded), unique output is the sum of generated tokens. File reads enter
+  the session as tool results and file writes leave as tool calls, so these
+  totals do not depend on any file still existing at evaluation time.
 - **Costs** are derived deterministically from the `pricing` table in
   `.kamino/factory-config.json` (USD per 1M input/output tokens per model).
   Cache-read and cache-creation tokens are billed at the input rate; the raw

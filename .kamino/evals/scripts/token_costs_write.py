@@ -98,6 +98,17 @@ def usage_totals(calls: list[dict]) -> dict[str, int]:
     return totals
 
 
+def session_block(measured: dict[str, int]) -> dict[str, int]:
+    """Counted-once totals over the agent session: output tokens are generated
+    fresh per API call, and new prompt content (including the harness system
+    prompt and file reads fed in as tool results) lands in input/cache_creation
+    exactly once — history resends hit cache_read, which is excluded here."""
+    return {
+        "unique_input_tokens": measured["input_tokens"] + measured["cache_creation_input_tokens"],
+        "unique_output_tokens": measured["output_tokens"],
+    }
+
+
 def content_chars(content: object) -> int:
     """Character count of a message content field: plain string or content-block list."""
     if isinstance(content, str):
@@ -304,6 +315,7 @@ def skipped_entry(record: dict) -> dict:
         "transcript_path": None,
         "api_calls": 0,
         "measured": zero_usage,
+        "session": {"unique_input_tokens": 0, "unique_output_tokens": 0},
         "estimated": {"input_chars": 0, "output_chars": 0, "chars_per_token": CHARS_PER_TOKEN,
                       "input_tokens": 0, "output_tokens": 0},
         "cost_usd": {"basis": "none", "pricing_model": None, "billable_input_tokens": 0,
@@ -323,6 +335,10 @@ def copy_transcript(run_dir: Path, record: dict, source: Path) -> str:
 
 def build_totals(steps: list[dict]) -> dict:
     measured = {key: sum(step["measured"][key] for step in steps) for key in USAGE_KEYS}
+    session = {
+        "unique_input_tokens": sum(step["session"]["unique_input_tokens"] for step in steps),
+        "unique_output_tokens": sum(step["session"]["unique_output_tokens"] for step in steps),
+    }
     estimated = {
         "input_chars": sum(step["estimated"]["input_chars"] for step in steps),
         "output_chars": sum(step["estimated"]["output_chars"] for step in steps),
@@ -341,7 +357,7 @@ def build_totals(steps: list[dict]) -> dict:
         "total": round(sum(step["cost_usd"]["total"] for step in steps), 6),
         "by_model": by_model,
     }
-    return {"measured": measured, "estimated": estimated, "cost_usd": cost}
+    return {"measured": measured, "session": session, "estimated": estimated, "cost_usd": cost}
 
 
 def main(argv: list[str]) -> int:
@@ -387,6 +403,7 @@ def main(argv: list[str]) -> int:
                 "transcript_path": copy_transcript(run_dir, record, source_path),
                 "api_calls": len(calls),
                 "measured": measured,
+                "session": session_block(measured),
                 "estimated": estimated,
                 "cost_usd": cost_block(measured, estimated, pricing_model, entry),
             }
