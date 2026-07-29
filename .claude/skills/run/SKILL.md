@@ -55,6 +55,8 @@ Prefer `<dispatch_dir>`: it carries `execution-graph.md`, which is the authorita
 .kamino/dispatch-queue/<ts>/trace.jsonl          # per-step trace records this skill appends
 .kamino/scripts/template-replace-completed.sh    # assert a file has no {{...}} tokens
 .kamino/evals/scripts/run_trace_write.py         # deterministic trace record writer
+.kamino/evals/scripts/token_costs_write.py       # post-run per-agent token usage + cost writer
+.kamino/dispatch-queue/<ts>/token_costs.json     # per-agent tokens and USD costs for this run
 .kamino/evals/tasks/run-trace-schema.md          # trace record schema
 .kamino/evals/tasks/outcomes/                    # where run-success-evaluate writes binary judgments
 .kamino/evals/tasks/details/<task_id>.json       # durable task context written before execution
@@ -65,7 +67,7 @@ Prefer `<dispatch_dir>`: it carries `execution-graph.md`, which is the authorita
 ## Execution model
 
 - The run order comes from `execution-graph.md` (the "Run order" section). Do not re-infer order by guessing; trust the graph. Only fall back to filename sort if no graph is present.
-- Each instantiated agent file is a complete prompt. Run it by dispatching it to a **subagent** (the Task / general-purpose agent), passing the agent file's full body as the subagent prompt.
+- Each instantiated agent file is a complete prompt. Run it by dispatching it to a **subagent** (the Task / general-purpose agent) with exactly this instruction: `You are the agent defined in the file <absolute path to the agent file>. Read that file NOW — its full body is your instruction. Follow it exactly and return only what its output format requires.` The dispatch prompt **must contain the instantiated agent file's absolute path**: that path is the join key token accounting uses to find this step's transcript afterwards (and it is the same dispatch form the evaluation sweeps use).
 - Use the agent's declared `model` **and `effort`** (from its frontmatter) for that subagent. The instantiated file's frontmatter carries the values bound at compile time (the blueprint's defaults unless the factory bound otherwise) — launch with exactly those, and deviate only with an explicit, stated reason.
 - Agents communicate by file: each writes to the path in its `<OUTPUT_FILE>`, and a later step reads an earlier step's output **by that path**. So order matters and each output must exist before its consumer runs.
 
@@ -96,6 +98,7 @@ uv run .kamino/evals/scripts/run_trace_write.py --trace "<dispatch_dir>/trace.js
 11. Save or emit run evidence after execution. Execution success is not task success until `run-success-evaluate` returns a binary judgment.
 12. Call `task-outcome-record` only after task detail JSON, run evidence, and a valid binary success judgment exist.
 13. Do not invoke AutoResearch during normal run execution or outcome recording.
+14. Token accounting is post-run and non-fatal: never let a `token_costs_write.py` failure fail the run or block `task-outcome-record`, and never edit or estimate the numbers by hand — the script's output is the only source.
 
 ## Steps
 
@@ -119,6 +122,9 @@ uv run .kamino/evals/scripts/run_trace_write.py --trace "<dispatch_dir>/trace.js
    - verification command exit codes, when declared;
    - skipped steps;
    - the trace path (`<dispatch_dir>/trace.jsonl`).
+6a. **Token accounting** — after run evidence is saved, run
+`uv run .kamino/evals/scripts/token_costs_write.py --run-dir "<dispatch_dir>" --format json`.
+On success, report the `token_costs.json` path in the run report. On failure, report `Token costs: unavailable — <script error>` and continue: token accounting never blocks outcome recording, but its failure is always surfaced.
 7. If the pipeline executed or skipped all steps successfully, call `run-success-evaluate` with the original task, task evaluation, run evidence, execution graph, and output files from the task detail JSON.
 8. If `run-success-evaluate` returns strict JSON with boolean `success`, call `task-outcome-record` with the task detail JSON, run evidence, and success judgment.
 9. Return the run report, task success judgment, and outcome record path.
@@ -164,6 +170,7 @@ Then, after execution, report:
 - Final status: SUCCESS (all steps OK/SKIPPED) | FAILED at step <n>
 - Task success: true / false / not judged
 - Outcome record: <record id and ledger path, or not recorded with reason>
+- Token costs: <dispatch_dir>/token_costs.json — total $<amount> | unavailable — <reason>
 - Final output(s): <path(s) of the last successful step>
 
 ## On failure

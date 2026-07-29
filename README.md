@@ -325,6 +325,36 @@ bash .kamino/evals/scripts/generate_reports.sh
 
 The generated HTML files are self-contained and can be opened directly.
 
+### Token usage and cost accounting
+
+After a run, the factory computes per-agent token usage and cost into the run
+capsule as `token_costs.json` (schema `kamino451.token-costs.v1`):
+
+- **Measured** numbers come from the agents' actual Claude Code transcripts
+  (`~/.claude/projects/<project-slug>/…`, including per-subagent files under
+  `<session-id>/subagents/`), summing the API usage counters per call. The
+  matched transcript is copied into the capsule under `transcripts/`.
+- **Estimated** numbers apply the chars/4 rule of thumb to the same
+  conversation traffic and serve as a cross-check and fallback.
+- **Costs** are derived deterministically from the `pricing` table in
+  `.kamino/factory-config.json` (USD per 1M input/output tokens per model).
+  Cache-read and cache-creation tokens are billed at the input rate; the raw
+  breakdown is preserved in the file.
+
+Both `run` and the corpus sweeps invoke the writer automatically. To recompute
+for an existing capsule while its transcripts still exist:
+
+```bash
+uv run .kamino/evals/scripts/token_costs_write.py \
+  --run-dir .kamino/dispatch-queue/<run-id> \
+  --format json
+```
+
+Transcripts are pruned by Claude Code on a retention schedule, so token
+accounting runs promptly after each attempt; the capsule copy is the durable
+record. A missing or ambiguous transcript fails the writer loudly — costs are
+never guessed.
+
 ## Evaluation internals
 
 The high-level evaluation skills drive the entire process described below. Use
