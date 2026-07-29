@@ -3,5 +3,25 @@
   "routing": {
     "success_rate_threshold": 0.9,
     "min_attempts_for_rate": 3
+  },
+  "pricing": {
+    "currency": "USD",
+    "models": {
+      "haiku": {
+        "model_ids": ["claude-haiku-4-5-20251001"],
+        "input_per_mtok": 1.0,
+        "output_per_mtok": 5.0
+      },
+      "sonnet": {
+        "model_ids": ["claude-sonnet-5", "claude-sonnet-4-5"],
+        "input_per_mtok": 3.0,
+        "output_per_mtok": 15.0
+      },
+      "opus": {
+        "model_ids": ["claude-opus-4-8", "claude-opus-4-5"],
+        "input_per_mtok": 5.0,
+        "output_per_mtok": 25.0
+      }
+    }
   }
 }
