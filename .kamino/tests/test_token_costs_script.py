@@ -219,3 +219,47 @@ def test_estimated_basis_when_usage_is_absent(tmp_path):
     assert step["cost_usd"]["basis"] == "estimated"
     assert step["cost_usd"]["billable_input_tokens"] == step["estimated"]["input_tokens"]
     assert step["cost_usd"]["total"] > 0
+
+
+def test_multi_step_run_aggregates_and_copies_transcripts(tmp_path):
+    agent_1 = str(tmp_path / "dispatch" / RUN_ID / "01-agent.md")
+    agent_2 = str(tmp_path / "dispatch" / RUN_ID / "02-agent.md")
+    records = [
+        trace_record(agent_1, step=1),
+        trace_record(agent_2, step=2),
+        trace_record(str(tmp_path / "dispatch" / RUN_ID / "03-agent.md"), step=3, status="skipped"),
+    ]
+    run_dir = build_capsule(tmp_path, records=records)
+    transcripts_root = tmp_path / "projects"
+    write_jsonl(transcripts_root / "aaaa-session" / "subagents" / "agent-a1.jsonl", transcript_entries(agent_1))
+    write_jsonl(transcripts_root / "aaaa-session" / "subagents" / "agent-a2.jsonl", transcript_entries(agent_2))
+    config = pricing_config(tmp_path / "config.json")
+
+    result = run_token_costs(run_dir, transcripts_root, config)
+    assert result.returncode == 0, result.stderr
+
+    payload = json.loads((run_dir / "token_costs.json").read_text(encoding="utf-8"))
+    assert len(payload["steps"]) == 3
+    # Two identical billed steps; skipped step costs nothing.
+    assert payload["totals"]["cost_usd"]["total"] == 0.01003
+    skipped = payload["steps"][2]
+    assert skipped["cost_usd"]["basis"] == "none"
+    assert skipped["cost_usd"]["total"] == 0.0
+    assert skipped["transcript_source"] is None
+    # Matched transcripts are copied into the capsule for durability.
+    assert (run_dir / "transcripts" / "step-01-attempt-1.jsonl").is_file()
+    assert (run_dir / "transcripts" / "step-02-attempt-1.jsonl").is_file()
+    assert payload["steps"][0]["transcript_path"] == "transcripts/step-01-attempt-1.jsonl"
+
+
+def test_ambiguous_transcript_match_fails_loudly(tmp_path):
+    agent_file = str(tmp_path / "dispatch" / RUN_ID / "01-agent.md")
+    run_dir = build_capsule(tmp_path, records=[trace_record(agent_file)])
+    transcripts_root = tmp_path / "projects"
+    write_jsonl(transcripts_root / "aaaa-session" / "subagents" / "agent-a1.jsonl", transcript_entries(agent_file))
+    write_jsonl(transcripts_root / "bbbb-session" / "subagents" / "agent-b1.jsonl", transcript_entries(agent_file))
+    config = pricing_config(tmp_path / "config.json")
+
+    result = run_token_costs(run_dir, transcripts_root, config)
+    assert result.returncode != 0
+    assert "ambiguous transcript match" in result.stderr

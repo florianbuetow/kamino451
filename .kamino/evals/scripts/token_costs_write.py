@@ -278,6 +278,36 @@ def cost_block(measured: dict[str, int], estimated: dict, pricing_model: str, en
     }
 
 
+def skipped_entry(record: dict) -> dict:
+    zero_usage = {key: 0 for key in USAGE_KEYS}
+    return {
+        "step": int(record["step"]),
+        "attempt": int(record["attempt"]),
+        "agent_file": str(record["agent_file"]),
+        "model": str(record["model"]),
+        "model_ids": [],
+        "status": str(record["status"]),
+        "transcript_source": None,
+        "transcript_path": None,
+        "api_calls": 0,
+        "measured": zero_usage,
+        "estimated": {"input_chars": 0, "output_chars": 0, "chars_per_token": CHARS_PER_TOKEN,
+                      "input_tokens": 0, "output_tokens": 0},
+        "cost_usd": {"basis": "none", "pricing_model": None, "billable_input_tokens": 0,
+                     "input": 0.0, "output": 0.0, "total": 0.0},
+    }
+
+
+def copy_transcript(run_dir: Path, record: dict, source: Path) -> str:
+    """Persist the matched transcript inside the capsule: Claude Code prunes its
+    transcript directory on a retention schedule, the capsule is kept forever."""
+    target_dir = run_dir / "transcripts"
+    target_dir.mkdir(exist_ok=True)
+    name = f"step-{int(record['step']):02d}-attempt-{int(record['attempt'])}.jsonl"
+    shutil.copy2(source, target_dir / name)
+    return f"transcripts/{name}"
+
+
 def build_totals(steps: list[dict]) -> dict:
     measured = {key: sum(step["measured"][key] for step in steps) for key in USAGE_KEYS}
     estimated = {
@@ -323,6 +353,9 @@ def main(argv: list[str]) -> int:
 
     steps: list[dict] = []
     for record in trace_records:
+        if record["status"] == "skipped":
+            steps.append(skipped_entry(record))
+            continue
         source_path, entries = match_transcript(transcripts_root, record, run_id)
         calls = deduped_assistant_calls(entries)
         measured = usage_totals(calls)
@@ -338,7 +371,7 @@ def main(argv: list[str]) -> int:
                 "model_ids": sorted(model_ids),
                 "status": str(record["status"]),
                 "transcript_source": str(source_path),
-                "transcript_path": None,
+                "transcript_path": copy_transcript(run_dir, record, source_path),
                 "api_calls": len(calls),
                 "measured": measured,
                 "estimated": estimated,
