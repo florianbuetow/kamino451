@@ -63,4 +63,5 @@ docs
 
 data/
 .kamino/dispatch-queue
+.kamino/tasks/*/transcripts/
 .kamino/auto-research

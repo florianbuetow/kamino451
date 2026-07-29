@@ -182,44 +182,57 @@ def probe_text(path: Path) -> str:
         return handle.read(PROBE_BYTES)
 
 
-def prompt_matches(probe: str, record: dict, run_id: str) -> bool:
-    """Join contract: the dispatch prompt names the instantiated agent file (path form),
-    or at least the run id together with the agent file name (body form)."""
+def prompt_matches(probe: str, record: dict) -> bool:
+    """Join contract: the dispatch prompt names the instantiated agent file path.
+    The run skill and the evaluation sweeps both dispatch with the file path,
+    so a transcript that cannot name the path is never billed."""
     agent_file = str(record["agent_file"])
     keys = [agent_file]
     if not agent_file.startswith("/"):
         keys.append(str(REPO / agent_file))
-    if any(key in probe for key in keys):
-        return True
-    return run_id in probe and Path(agent_file).name in probe
+    return any(key in probe for key in keys)
 
 
-def match_transcript(root: Path, record: dict, run_id: str) -> tuple[Path, list[dict]]:
-    """Find exactly one transcript for this step attempt; zero or several is an error."""
+def contained_in_window(span: tuple[datetime, datetime], record: dict) -> bool:
+    """True when the transcript's whole span lies inside the attempt's exact
+    trace window — used to split same-agent retries whose slack windows overlap."""
+    started = parse_timestamp(str(record["started_at"]))
+    ended = parse_timestamp(str(record["ended_at"]))
+    return span[0] >= started and span[1] <= ended
+
+
+def match_transcript(root: Path, record: dict) -> tuple[Path, list[dict]]:
+    """Find exactly one transcript for this step attempt. Several candidates
+    under the slack window collapse to the one contained in the exact trace
+    window (same-agent retry case); anything still ambiguous fails loudly."""
     window_start = parse_timestamp(str(record["started_at"])) - timedelta(seconds=MATCH_WINDOW_SECONDS)
     window_end = parse_timestamp(str(record["ended_at"])) + timedelta(seconds=MATCH_WINDOW_SECONDS)
-    matches: list[tuple[Path, list[dict]]] = []
+    matches: list[tuple[Path, list[dict], tuple[datetime, datetime]]] = []
     for path in transcript_files(root):
-        if not prompt_matches(probe_text(path), record, run_id):
+        if not prompt_matches(probe_text(path), record):
             continue
         entries = load_jsonl(path)
-        if not prompt_matches(first_user_text(entries), record, run_id):
+        if not prompt_matches(first_user_text(entries), record):
             continue
         span = entry_time_span(entries)
         if span is None or span[0] > window_end or span[1] < window_start:
             continue
-        matches.append((path, entries))
+        matches.append((path, entries, span))
+    if len(matches) > 1:
+        contained = [match for match in matches if contained_in_window(match[2], record)]
+        if len(contained) == 1:
+            matches = contained
     if len(matches) == 0:
         raise SystemExit(
             f"no transcript matched step {record['step']} attempt {record['attempt']} "
             f"({record['agent_file']}) under {root} within its trace window"
         )
     if len(matches) > 1:
-        listed = ", ".join(str(path) for path, _ in matches)
+        listed = ", ".join(str(path) for path, _, _ in matches)
         raise SystemExit(
             f"ambiguous transcript match for step {record['step']} attempt {record['attempt']}: {listed}"
         )
-    return matches[0]
+    return matches[0][0], matches[0][1]
 
 
 def load_pricing(config_path: Path) -> dict:
@@ -356,7 +369,7 @@ def main(argv: list[str]) -> int:
         if record["status"] == "skipped":
             steps.append(skipped_entry(record))
             continue
-        source_path, entries = match_transcript(transcripts_root, record, run_id)
+        source_path, entries = match_transcript(transcripts_root, record)
         calls = deduped_assistant_calls(entries)
         measured = usage_totals(calls)
         estimated = estimate_block(entries, calls)
@@ -378,6 +391,11 @@ def main(argv: list[str]) -> int:
                 "cost_usd": cost_block(measured, estimated, pricing_model, entry),
             }
         )
+
+    sources = [step["transcript_source"] for step in steps if step["transcript_source"]]
+    duplicates = sorted({source for source in sources if sources.count(source) > 1})
+    if duplicates:
+        raise SystemExit(f"transcript matched to more than one step attempt: {duplicates}")
 
     payload = {
         "schema_version": SCHEMA_VERSION,

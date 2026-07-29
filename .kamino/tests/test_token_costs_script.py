@@ -164,7 +164,7 @@ def test_missing_transcript_fails_loudly(tmp_path):
     assert "no transcript matched" in result.stderr
 
 
-def test_unpriced_model_fails_loudly(tmp_path):
+def test_unregistered_model_id_fails_loudly(tmp_path):
     agent_file = str(tmp_path / "dispatch" / RUN_ID / "01-agent.md")
     run_dir = build_capsule(tmp_path, records=[trace_record(agent_file)])
     transcripts_root = tmp_path / "projects"
@@ -277,3 +277,45 @@ def test_record_run_payload_reports_token_costs_status(tmp_path):
     )
     assert result.returncode == 0
     assert "--transcripts-root" in result.stdout
+
+
+def test_retry_attempts_disambiguate_by_exact_window(tmp_path):
+    agent_file = str(tmp_path / "dispatch" / RUN_ID / "01-agent.md")
+    first = trace_record(agent_file)
+    second = trace_record(agent_file, attempt=2)
+    second["started_at"] = "2026-07-20T10:05:30Z"
+    second["ended_at"] = "2026-07-20T10:09:00Z"
+    run_dir = build_capsule(tmp_path, records=[first, second])
+    transcripts_root = tmp_path / "projects"
+    write_jsonl(transcripts_root / "aaaa-session" / "subagents" / "agent-a1.jsonl", transcript_entries(agent_file))
+    retry_entries = transcript_entries(agent_file)
+    for entry in retry_entries:
+        entry["timestamp"] = entry["timestamp"].replace("T10:00:", "T10:06:")
+    write_jsonl(transcripts_root / "aaaa-session" / "subagents" / "agent-a2.jsonl", retry_entries)
+    config = pricing_config(tmp_path / "config.json")
+
+    result = run_token_costs(run_dir, transcripts_root, config)
+    assert result.returncode == 0, result.stderr
+
+    payload = json.loads((run_dir / "token_costs.json").read_text(encoding="utf-8"))
+    assert [step["attempt"] for step in payload["steps"]] == [1, 2]
+    assert payload["steps"][0]["transcript_source"].endswith("agent-a1.jsonl")
+    assert payload["steps"][1]["transcript_source"].endswith("agent-a2.jsonl")
+    assert (run_dir / "transcripts" / "step-01-attempt-2.jsonl").is_file()
+
+
+def test_unpriced_short_model_fails_loudly(tmp_path):
+    agent_file = str(tmp_path / "dispatch" / RUN_ID / "01-agent.md")
+    records = [trace_record(agent_file)]
+    records[0]["model"] = "sonnet"
+    run_dir = build_capsule(tmp_path, records=records)
+    transcripts_root = tmp_path / "projects"
+    write_jsonl(
+        transcripts_root / "aaaa-session" / "subagents" / "agent-a1.jsonl",
+        transcript_entries(agent_file, model_id="claude-sonnet-5"),
+    )
+    config = pricing_config(tmp_path / "config.json")
+
+    result = run_token_costs(run_dir, transcripts_root, config)
+    assert result.returncode != 0
+    assert "no pricing entry covers model" in result.stderr
