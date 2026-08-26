@@ -92,6 +92,28 @@ def test_auto_research_parse_final_score() -> None:
     assert runner.parse_final_score("noise\nFINAL_SCORE:0.625\n") == 0.625
 
 
+def test_auto_research_init_creates_missing_best_score_without_readme(tmp_path: Path) -> None:
+    """The documented workspace recipe should initialize without extra hidden files."""
+    repo_root = Path(__file__).resolve().parents[2]
+    runner = load_module("kamino_auto_research_init", repo_root / ".kamino" / "evals" / "scripts" / "auto_research.py")
+    (tmp_path / ".gitignore").write_text("__pycache__/\n", encoding="utf-8")
+    for filename in ["agent.md", "program.md", "eval.py", "tasks.json", "run_swe_agent.py"]:
+        (tmp_path / filename).write_text(f"{filename}\n", encoding="utf-8")
+
+    runner.initialize_workspace_git(tmp_path)
+
+    assert (tmp_path / "best_score.txt").read_text(encoding="utf-8") == "-inf\n"
+    tracked = subprocess.run(
+        ["git", "ls-files"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.splitlines()
+    assert "best_score.txt" in tracked
+    assert "README.md" not in tracked
+
+
 def test_keep_or_revert_reverts_non_improving_agent(tmp_path: Path) -> None:
     repo_root = Path(__file__).resolve().parents[2]
     runner = load_module("kamino_auto_research_revert", repo_root / ".kamino" / "evals" / "scripts" / "auto_research.py")

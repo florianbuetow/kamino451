@@ -74,6 +74,10 @@ cp "<target_blueprint>" "$workspace/agent.md"
 uv run .kamino/evals/scripts/auto_research.py init --workspace "$workspace"
 ```
 
+   Initialization creates `best_score.txt` with an unbounded-low starting score
+   when it is absent, then commits the complete baseline. No extra workspace
+   files beyond the recipe above are required.
+
 7. **Baseline sweep** — establish the starting score before any edit:
 
 ```bash

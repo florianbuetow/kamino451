@@ -69,6 +69,18 @@ def test_new_agent_and_skills_exist_with_required_contracts() -> None:
     assert "Partial" in record_text or "partial" in record_text
 
 
+def test_just_test_entrypoints_initialize_the_managed_environment() -> None:
+    """User-facing validation should go through just and share one init contract."""
+    justfile = read_text("justfile")
+
+    assert "init:" in justfile
+    assert "requirements-dev.txt" in justfile
+    assert "run: init check" in justfile
+    assert "boundary: init" in justfile
+    assert "test *args: init" in justfile
+    assert ".venv/bin/pytest {{args}}" in justfile
+
+
 def test_factory_compile_flow_uses_evaluation_ranking_candidate_search_before_routing() -> None:
     """Factory should run the new compile evidence steps before route selection."""
     factory_text = read_text(".claude/skills/factory/SKILL.md")

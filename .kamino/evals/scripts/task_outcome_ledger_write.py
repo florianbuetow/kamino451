@@ -4,10 +4,13 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
 import json
+import os
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import TextIO
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
@@ -126,11 +129,41 @@ def build_record(
     return record
 
 
-def append_record(ledger_path: Path, record: dict[str, object]) -> None:
-    """Append one stable JSONL record."""
+def append_record(ledger_file: TextIO, record: dict[str, object]) -> None:
+    """Append one stable JSONL record to an open, exclusively locked file."""
     line = json.dumps(record, sort_keys=True, separators=(",", ":"))
-    with ledger_path.open("a", encoding="utf-8") as ledger_file:
-        ledger_file.write(f"{line}\n")
+    ledger_file.seek(0, os.SEEK_END)
+    ledger_file.write(f"{line}\n")
+    ledger_file.flush()
+    os.fsync(ledger_file.fileno())
+
+
+def build_and_append_locked(
+    ledger_path: Path,
+    task_detail: dict[str, object],
+    task_detail_path: Path,
+    run_evidence: dict[str, object],
+    success_judgment: dict[str, object],
+    success_judgment_path: Path,
+) -> dict[str, object]:
+    """Allocate the sequence and append atomically across writer processes."""
+    with ledger_path.open("a+", encoding="utf-8") as ledger_file:
+        fcntl.flock(ledger_file.fileno(), fcntl.LOCK_EX)
+        try:
+            existing_records = existing_records_for_append(ledger_path)
+            record = build_record(
+                ledger_path,
+                len(existing_records),
+                task_detail,
+                task_detail_path,
+                run_evidence,
+                success_judgment,
+                success_judgment_path,
+            )
+            append_record(ledger_file, record)
+            return record
+        finally:
+            fcntl.flock(ledger_file.fileno(), fcntl.LOCK_UN)
 
 
 def result_payload(ledger_path: Path, record: dict[str, object]) -> dict[str, object]:
@@ -162,22 +195,19 @@ def main(argv: list[str]) -> int:
 
         ledger_path = Path(args.ledger)
         ensure_ledger_writable(ledger_path)
-        existing_records = existing_records_for_append(ledger_path)
         task_detail_path = Path(args.task_detail)
         task_detail = parse_task_detail(load_json_file(args.task_detail, "task detail"))
         run_evidence = parse_run_evidence(load_json_file(args.run_evidence, "run evidence"))
         success_judgment_path = Path(args.success_judgment)
         success_judgment = parse_success_judgment(load_json_file(args.success_judgment, "success judgment"))
-        record = build_record(
+        record = build_and_append_locked(
             ledger_path,
-            len(existing_records),
             task_detail,
             task_detail_path,
             run_evidence,
             success_judgment,
             success_judgment_path,
         )
-        append_record(ledger_path, record)
         print(format_json(result_payload(ledger_path, record)))
         return 0
     except Exception as exc:

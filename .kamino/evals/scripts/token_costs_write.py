@@ -55,18 +55,25 @@ def parse_timestamp(value: str) -> datetime:
 
 
 def load_jsonl(path: Path) -> list[dict]:
-    """Parse a JSONL file, skipping blank and torn trailing lines."""
+    """Parse JSONL, tolerating only an interrupted, non-terminated final append."""
+    text = path.read_text(encoding="utf-8", errors="replace")
+    lines = text.splitlines()
+    final_line_terminated = text.endswith(("\n", "\r"))
     entries: list[dict] = []
-    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+    for line_number, line in enumerate(lines, start=1):
         line = line.strip()
         if not line:
             continue
         try:
             entry = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(entry, dict):
-            entries.append(entry)
+        except json.JSONDecodeError as exc:
+            is_torn_final_append = line_number == len(lines) and not final_line_terminated
+            if is_torn_final_append:
+                break
+            raise SystemExit(f"malformed JSONL line {line_number} in {path}") from exc
+        if not isinstance(entry, dict):
+            raise SystemExit(f"JSONL line {line_number} in {path} must be an object")
+        entries.append(entry)
     return entries
 
 

@@ -179,6 +179,42 @@ def test_missing_transcript_fails_loudly(tmp_path):
     assert "no transcript matched" in result.stderr
 
 
+def test_malformed_middle_transcript_line_fails_loudly(tmp_path):
+    """A corrupt completed record must not silently reduce token accounting."""
+    agent_file = str(tmp_path / "dispatch" / RUN_ID / "01-agent.md")
+    run_dir = build_capsule(tmp_path, records=[trace_record(agent_file)])
+    transcripts_root = tmp_path / "projects"
+    transcript = transcripts_root / "aaaa-session" / "subagents" / "agent-a1.jsonl"
+    entries = transcript_entries(agent_file)
+    transcript.parent.mkdir(parents=True)
+    lines = [json.dumps(entry) for entry in entries]
+    transcript.write_text("\n".join([lines[0], "{malformed", *lines[1:]]) + "\n", encoding="utf-8")
+    config = pricing_config(tmp_path / "config.json")
+
+    result = run_token_costs(run_dir, transcripts_root, config)
+
+    assert result.returncode != 0
+    assert "malformed JSONL line 2" in result.stderr
+    assert not (run_dir / "token_costs.json").exists()
+
+
+def test_torn_trailing_transcript_line_is_tolerated(tmp_path):
+    """An interrupted final append may leave one incomplete, non-terminated line."""
+    agent_file = str(tmp_path / "dispatch" / RUN_ID / "01-agent.md")
+    run_dir = build_capsule(tmp_path, records=[trace_record(agent_file)])
+    transcripts_root = tmp_path / "projects"
+    transcript = transcripts_root / "aaaa-session" / "subagents" / "agent-a1.jsonl"
+    transcript.parent.mkdir(parents=True)
+    valid = "\n".join(json.dumps(entry) for entry in transcript_entries(agent_file))
+    transcript.write_text(valid + "\n{\"type\":", encoding="utf-8")
+    config = pricing_config(tmp_path / "config.json")
+
+    result = run_token_costs(run_dir, transcripts_root, config)
+
+    assert result.returncode == 0, result.stderr
+    assert (run_dir / "token_costs.json").is_file()
+
+
 def test_unregistered_model_id_fails_loudly(tmp_path):
     agent_file = str(tmp_path / "dispatch" / RUN_ID / "01-agent.md")
     run_dir = build_capsule(tmp_path, records=[trace_record(agent_file)])

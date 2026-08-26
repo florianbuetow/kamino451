@@ -27,8 +27,6 @@ dispatches a subagent with that exact file.
 ## Requirements
 
 - [uv](https://docs.astral.sh/uv/) for running Python commands
-- A Python environment with pytest available to uv. The repository does not
-  currently pin test dependencies in a project manifest.
 - [just](https://github.com/casey/just) as the command runner
 - [Claude Code](https://claude.com/claude-code) for factory skills and agent dispatch
 
@@ -36,6 +34,7 @@ dispatches a subagent with that exact file.
 
 ```bash
 just help
+just init
 just run
 just check
 just test
@@ -43,15 +42,15 @@ just ci
 ```
 
 - `just help` lists the available repository commands.
+- `just init` creates or refreshes the pinned test environment.
 - `just run` smoke-tests the factory workflow contracts and integrity checks. It
   does not dispatch a solving agent.
 - `just check` validates all agent blueprint templates.
 - `just test` runs the complete pytest suite.
-- `just ci` runs both template validation and the complete test suite.
+- `just ci` runs template validation, the boundary scan, and the complete test suite.
 
-`just run`, `just test`, and `just ci` currently depend on local files under the
-gitignored `docs/` directory. See [Testing notes](#testing-notes) before using
-them from a fresh clone.
+`just run`, `just boundary`, `just test`, and `just ci` initialize that managed
+environment automatically.
 
 ## Run a task
 
@@ -189,7 +188,7 @@ directory.
 Run the discovery-based integrity test:
 
 ```bash
-uv run pytest .kamino/tests/test_corpus_integrity_any.py -q
+just test .kamino/tests/test_corpus_integrity_any.py -q
 ```
 
 The test reconciles the complete index for every discovered corpus. It then
@@ -529,10 +528,9 @@ uv run .kamino/evals/scripts/auto_research.py init --workspace <workspace>
 uv run .kamino/evals/scripts/auto_research.py evaluate-change --workspace <workspace>
 ```
 
-These are internal driver commands, not workspace setup commands. The current
-driver also requires `README.md` and `best_score.txt` in the workspace, but the
-`/improve-agent` setup instructions do not create them. Direct initialization
-will fail until those files are supplied or that contract is reconciled.
+These are internal driver commands, not workspace setup commands. Initialization
+creates the starting `best_score.txt` automatically; the documented
+`/improve-agent` recipe is sufficient on a fresh workspace.
 
 An improved prompt is not promoted automatically. Prove it task by task with
 `/replay`, then create a new blueprint version with `/createblueprint`.
@@ -589,16 +587,14 @@ pytest.ini
 
 ## Testing notes
 
-- Run pytest through uv with `uv run pytest`.
-- From another directory, run
-  `uv run --directory /path/to/kamino451 pytest`.
+- Run the complete suite with `just test`; it depends on `just init`.
+- Run a subset with `just test <path> [pytest arguments]`.
 - `just check` validates blueprint template contracts with
   `.kamino/scripts/template-variable-checks.sh`.
 - Corpus integrity tests discover all present corpora automatically.
-- The tracked test suite and `task-llm-judge` prompt currently reference files
-  under the gitignored `docs/` directory. A fresh clone does not contain those
-  files, so restore the local documentation before relying on `just run`,
-  `just test`, `just ci`, or semantic task evaluation.
+- Project-level validation should use `just`, not direct `uv` commands. Internal
+  factory skills still use `uv run` because copied factories deliberately do
+  not carry this repository's `justfile`.
 
 ## License
 

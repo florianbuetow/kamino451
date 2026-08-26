@@ -13,7 +13,6 @@ from pathlib import Path
 
 REQUIRED_BASELINE_FILES = [
     ".gitignore",
-    "README.md",
     "agent.md",
     "program.md",
     "eval.py",
@@ -106,6 +105,9 @@ def ensure_required_files(workspace: Path) -> None:
 
 def initialize_workspace_git(workspace: Path) -> None:
     """Initialize the nested git repository and baseline commit."""
+    best_score_path = workspace / "best_score.txt"
+    if not best_score_path.exists():
+        best_score_path.write_text("-inf\n", encoding="utf-8")
     ensure_required_files(workspace)
     git_dir = workspace / ".git"
     if not git_dir.exists():

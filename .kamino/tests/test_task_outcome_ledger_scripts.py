@@ -6,6 +6,7 @@ import hashlib
 import importlib.util
 import json
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 from types import ModuleType
@@ -380,3 +381,31 @@ def test_ledger_write_duplicate_invocation_appends_auditable_second_record(
     assert records[0]["record_sequence"] == 1
     assert records[1]["record_sequence"] == 2
     assert records[0]["record_id"] != records[1]["record_id"]
+
+
+def test_ledger_write_allocates_unique_sequences_across_processes(tmp_path: Path) -> None:
+    """Concurrent writers must serialize sequence allocation and append."""
+    fixtures = candidate_fixture_dir()
+    ledger_path = tmp_path / "ledger.jsonl"
+    command = [
+        sys.executable,
+        str(repo_root() / ".kamino" / "evals" / "scripts" / "task_outcome_ledger_write.py"),
+        "--ledger",
+        str(ledger_path),
+        "--task-detail",
+        str(fixtures / "task-detail-coding.json"),
+        "--run-evidence",
+        str(fixtures / "run-evidence-coding-success.json"),
+        "--success-judgment",
+        str(fixture_dir() / "success-judgment-true.json"),
+        "--format",
+        "json",
+    ]
+    processes = [subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True) for _ in range(12)]
+    results = [process.communicate(timeout=15) for process in processes]
+
+    for process, (_, stderr) in zip(processes, results):
+        assert process.returncode == 0, stderr
+    records = json_lines(ledger_path)
+    assert len(records) == 12
+    assert sorted(record["record_sequence"] for record in records) == list(range(1, 13))

@@ -32,6 +32,8 @@ env/
 
 .cursor/
 
+.superpowers/
+
 .pytest_cache/
 .coverage
 htmlcov/
