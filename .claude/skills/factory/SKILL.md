@@ -20,7 +20,7 @@ The default front door to the **afac** (agentfactory) plugin. Given a goal, it d
 | `taskgraph` | The task is complex/multi-step. Break it into a chain of indexed agents wired by filename and instantiate them. |
 | `createblueprint` | No existing agent fits — a new agent *type* must be designed and added to the index first. |
 | `run` | Instantiated agents already exist and the user wants them executed in sequence with per-step verification. |
-| `evaluate-factory` | The user wants to seed the factory with outcome data or measure its routing by sweeping a task corpus (factory-picked agent+model, cheap-first escalation, ground-truth judging, ledger records). |
+| `evaluate-factory` | The user wants to seed the factory with outcome data or measure its routing by sweeping a task corpus (factory-picked agent+model, evidence-and-cost scoring, cheap-first retry escalation, ground-truth judging, ledger records). |
 | `evaluate-agent` | The user wants to benchmark one prescribed agent blueprint against a task corpus (agent never varies; ground-truth judging, ledger records). |
 | `failure-analyze` | A recorded attempt failed and the user wants it classified into catalog failure modes with the component to improve. |
 | `improve-agent` | The user explicitly wants an agent blueprint's prompt improved against failure evidence (keep-or-revert optimization in an isolated workspace). Deliberate only — never routed during normal task completion. |
@@ -73,7 +73,7 @@ Route bias rules:
 - Prefer `clone` when one shortlisted or indexed agent fits.
 - Prefer `taskgraph` when the task needs ordered steps or several shortlisted/indexed agents fit as a pipeline.
 - Prefer `createblueprint` when no indexed agent fits without contradicting baked agent behavior.
-- Prefer shortlisted candidates whose `meets_success_rate_threshold` is `true` — their agent+model+effort combination has a success rate above the configured threshold for this task type. Among qualified candidates, do not chase the highest rate; a cheaper qualified candidate beats a higher-rate expensive one.
+- Prefer shortlisted candidates whose `meets_success_rate_threshold` is `true` — their agent+model+effort combination has a success rate above the configured threshold for this task type. Rank qualified candidates by normalized similarity support minus the optional weighted cost penalty described below.
 - Treat prior partial completion as failure.
 - Do not use historical success alone to override a current task/agent contradiction.
 
@@ -92,11 +92,14 @@ uv run .kamino/evals/scripts/route_recommendation.py \
 ```
 
    Policy chain, in order:
-   1. **Success-rate policy.** A combination qualifies when its same-task-type success rate is strictly above `routing.success_rate_threshold` over at least `routing.min_attempts_for_rate` attempts — both read from the central factory config `.kamino/factory-config.json`. Qualifiers are ranked **cheap-first** (model ladder `haiku` → `sonnet` → `opus`, then effort, then similarity support) — deliberately **not** by highest rate: a good-enough rate on a cheap model beats a perfect rate on an expensive one.
-   2. **Weighted-majority fallback.** When no combination clears the bar, it weights successful outcomes by task-type match and pairwise-difficulty proximity (weighted majority, ties cheap-first).
+   1. **Success-rate policy.** A combination qualifies when its same-task-type success rate is strictly above `routing.success_rate_threshold` over at least `routing.min_attempts_for_rate` attempts — both read from the central factory config `.kamino/factory-config.json`. For each qualified agent+model+effort combination, normalize its similarity support by the maximum support, then optionally score `base_support - weight * (estimated_cost - minimum_cost) / scale_usd`. The usage forecast and support evidence come from that same combination.
+   2. **Weighted-majority fallback.** When no combination clears the bar, weight successful outcomes by task-type match and pairwise-difficulty proximity. Cost forecasting at this stage is explicitly a historical blueprint mixture for each model+effort pair, not a forecast for a prescribed agent. Apply the same optional cost penalty.
    3. **Cold start.** With no successful history at all, the cheap-first escalation policy applies.
-2. **Escalation policy (cheap-first).** When seeding data or when no history says otherwise, bind the cheapest plausible model first (`haiku`) to surface failures early and cheaply, and escalate to `sonnet` only on a failed attempt. Each attempt is its own instantiation, task detail (`attempt` N), and outcome record.
-3. **Recorded reason.** Every binding that deviates from the blueprint default must be recorded in the route decision JSON (`model`, `effort`) and thus in the task detail — silent substitution is forbidden.
+2. **Cost policy.** Cost is optional evidence supplied by the standalone usage forecast, pricing catalog, and pure cost calculator. The default config enables it with `weight: 0.2`, `scale_usd: 0.1`, and `min_samples: 3`; omitting `routing.cost` disables it. Disabled cost or weight zero skips estimation. Equal costs, including all-zero estimates, add no penalty. If any candidate's estimate is unavailable, use baseline support scores for the whole comparison. Stable agent/model/effort identity breaks final-score ties. Historical routing must use dated `pricing.rate_cards` plus explicit `--pricing-at`/`--known-at`; never invent old price dates or treat a legacy live snapshot as an invoice.
+3. **Escalation policy (cheap-first).** The fixed ladder is used only when seeding data, at cold start, or after a failed attempt. Bind the cheapest plausible model first (`haiku`) and escalate to `sonnet` only on a failed attempt. Each attempt is its own instantiation, task detail (`attempt` N), and outcome record.
+4. **Recorded reason.** Every binding that deviates from the blueprint default must be recorded in the route decision JSON (`model`, `effort`) and thus in the task detail — silent substitution is forbidden.
+
+Retain the recommendation's `candidate_scores`, usage-forecast evidence, and cost estimates in the `route-decision.json` context. The deterministic router owns ranking; `factory`, `clone`, and `taskgraph` must use its selected binding without applying a second cheapest-model sort.
 
 `clone` and `taskgraph` perform the binding by setting the instantiated copy's frontmatter; `run` then simply respects the instantiated file.
 
@@ -124,7 +127,7 @@ A new blueprint is justified only when the task needs baked behavior that no exi
 6. Compile phase must never write to `.kamino/evals/tasks/task-outcome-ledger.jsonl`.
 7. Compile phase may write `.kamino/evals/tasks/details/<task_id>.json` through `task-detail-record`.
 8. Do not invoke AutoResearch during factory compilation or normal task completion.
-9. The success-rate threshold and minimum attempt count live only in the central factory config `.kamino/factory-config.json` (`routing.success_rate_threshold`, `routing.min_attempts_for_rate`). Never hardcode these values elsewhere; change routing strictness by editing that file.
+9. The success-rate threshold, minimum attempt count, and optional cost policy live only in the central factory config `.kamino/factory-config.json` (`routing.success_rate_threshold`, `routing.min_attempts_for_rate`, `routing.cost`). Never hardcode these values elsewhere. Old ledger records without explicit cost-artifact links remain usable and fall back to baseline support scoring.
 
 ## Execution boundary
 

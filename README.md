@@ -129,8 +129,9 @@ Compile artifacts are reusable, but compile never writes to the outcome ledger.
 - Corpus attempts use test exit codes as ground truth. For general runs, boolean
   `verification_evidence.tests_passed` selects deterministic judgment; without
   that evidence, the LLM success judge is used.
-- Cold-start evaluation sweeps begin with the cheapest model in the ladder. When
-  useful history exists, factory routing may begin with the recommended model.
+- The fixed model ladder is used for cold starts and retry escalation. When
+  useful history exists, routing scores supported historical choices and may
+  begin with the recommended model.
 - A failed sweep attempt advances to the next model when the configured ladder
   contains one.
 
@@ -350,8 +351,15 @@ capsule as `token_costs.json` (schema `kamino451.token-costs.v1`):
   all input-side tokens at the flat input rate. The raw token breakdown is
   preserved in the file either way.
 
-Both `run` and the corpus sweeps invoke the writer automatically. To recompute
-for an existing capsule while its transcripts still exist:
+Cost calculation, pricing lookup, usage forecasting, and routing are separate
+functional units. The calculator accepts only token usage and an immutable
+rate-card snapshot; it does not read files, choose models, or consult the
+clock. Each normalized call preserves its exact model ID, usage, applied rates,
+pricing identity, provider, billing mode, and calculator version. A past result
+can therefore be reproduced after the live catalog changes.
+
+Both `run` and the corpus sweeps invoke the writer automatically. To capture
+costs for a capsule while its transcripts still exist:
 
 ```bash
 uv run .kamino/evals/scripts/token_costs_write.py \
@@ -359,10 +367,69 @@ uv run .kamino/evals/scripts/token_costs_write.py \
   --format json
 ```
 
+Repeating this command reuses the existing snapshot without consulting current
+prices or transcripts, provided the trace has not changed. New trace attempts
+require a fresh capture. To capture fresh evidence, supply `--output` with a new
+file path. Existing cost artifacts are never overwritten.
+
 Transcripts are pruned by Claude Code on a retention schedule, so token
 accounting runs promptly after each attempt; the capsule copy is the durable
 record. A missing or ambiguous transcript fails the writer loudly — costs are
 never guessed.
+
+Reproduce a saved artifact from its embedded rate snapshots, without reading
+transcripts or the current catalog:
+
+```bash
+uv run .kamino/evals/scripts/token_costs_evaluate.py reproduce \
+  --input .kamino/dispatch-queue/<run-id>/token_costs.json \
+  --output /tmp/<run-id>-reproduced-costs.json \
+  --format json
+```
+
+Repricing is a separate operation and writes a separate artifact:
+
+```bash
+uv run .kamino/evals/scripts/token_costs_evaluate.py reprice \
+  --input .kamino/dispatch-queue/<run-id>/token_costs.json \
+  --output /tmp/<run-id>-repriced-costs.json \
+  --catalog path/to/versioned-pricing.json \
+  --known-at 2026-07-01T00:00:00Z \
+  --format json
+```
+
+By default repricing uses each recorded call timestamp. `--pricing-at` applies
+one explicit timestamp to every call; `--known-at` excludes catalog entries
+recorded later. A versioned catalog uses exact model IDs and half-open effective
+intervals (`effective_from <= time < effective_to`):
+
+```json
+{
+  "pricing": {
+    "currency": "USD",
+    "provider": "example-provider",
+    "source": "synthetic documentation example",
+    "rate_cards": [{
+      "model_id": "example-model-20260101",
+      "pricing_version": "synthetic-v1",
+      "billing_mode": "standard",
+      "effective_from": "2026-01-01T00:00:00Z",
+      "effective_to": null,
+      "recorded_at": "2025-12-15T00:00:00Z",
+      "input_per_mtok": "1.00",
+      "output_per_mtok": "5.00",
+      "cache_read_per_mtok": "0.10",
+      "cache_write_5m_per_mtok": "1.25",
+      "cache_write_1h_per_mtok": "2.00"
+    }]
+  }
+}
+```
+
+These values are synthetic. Do not invent effective or recorded dates for old
+prices. The legacy `pricing.models` table can be snapshotted for a live run,
+but it is not historical price evidence and cannot be used for historical
+repricing.
 
 ## Evaluation internals
 
@@ -487,15 +554,37 @@ compatibility checks select the agent separately.
 The recommendation follows this order:
 
 1. **Success-rate policy:** find agent, model, and effort combinations that clear
-   the threshold with enough attempts, then prefer the cheaper qualifying model.
+   the threshold with enough attempts. Normalize each combination's similarity
+   support by the maximum support and optionally subtract a cost penalty:
+
+   `final_score = base_support - weight * (estimated_cost - minimum_cost) / scale_usd`
+
+   The same qualified agent+model+effort combination supplies both support and
+   its whole-attempt usage forecast.
 2. **Weighted-majority fallback:** recommend a model and effort by weighting
    successful records according to task-type match and difficulty proximity.
+   Its cost forecast is explicitly a historical mixture of blueprints for that
+   model+effort pair, not a forecast for a prescribed agent.
 3. **Cold start:** use the cheapest model in the factory's built-in ladder when
    no useful history exists.
 
-The success threshold and minimum attempt count live in
-`.kamino/factory-config.json`. The model ladder is implemented in the routing
-script rather than configured in that file.
+Final-score ties use stable agent/model/effort identity ordering. Equal costs,
+including all-zero costs, produce zero penalties and preserve the baseline
+decision. Omitting `routing.cost`, setting `enabled` to `false`, or setting
+`weight` to zero skips estimation. If any candidate lacks a usable estimate,
+cost is disabled for the entire comparison so an unknown price never looks
+free. Old ledger records without explicit cost-artifact links therefore fall
+back to baseline support scoring.
+
+The factory retains the recommendation's `candidate_scores`, forecast evidence,
+and cost estimates in the route-decision context for audit. Downstream factory
+steps use the selected result as-is; they must not re-rank candidates with a
+separate cheapest-model rule.
+
+The default cost policy in `.kamino/factory-config.json` is enabled with weight
+`0.2`, scale `0.1` USD, and `min_samples` `3`. The success threshold and minimum
+attempt count also live there. The fixed model ladder is reserved for cold
+starts and failed-attempt escalation.
 
 Run the recommendation script directly with:
 
@@ -506,6 +595,13 @@ uv run .kamino/evals/scripts/route_recommendation.py \
   --difficulty .kamino/evals/tasks/difficulty/<eval-id>.json \
   --format json
 ```
+
+For a historical routing comparison, provide a factory config containing dated
+prices with `--config`, plus `--pricing-at` and `--known-at` ISO timestamps.
+`--known-at` filters both ledger outcomes and prices to evidence available at
+that time. `--pricing-at` selects the applicable dated rate card and therefore
+requires versioned `rate_cards`; legacy live-price snapshots are refused for
+historical routing.
 
 ## AutoResearch prompt optimization
 

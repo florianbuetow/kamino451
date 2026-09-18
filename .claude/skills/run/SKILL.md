@@ -124,7 +124,7 @@ uv run .kamino/evals/scripts/run_trace_write.py --trace "<dispatch_dir>/trace.js
    - the trace path (`<dispatch_dir>/trace.jsonl`).
 6a. **Token accounting** — after run evidence is saved, run
 `uv run .kamino/evals/scripts/token_costs_write.py --run-dir "<dispatch_dir>" --format json`.
-On success, report the `token_costs.json` path in the run report. On failure, report `Token costs: unavailable — <script error>` and continue: token accounting never blocks outcome recording, but its failure is always surfaced.
+On success, report the `token_costs.json` path in the run report and save `verification_evidence.cost_artifact` in run evidence as `{"run_id": "<run_id from token_costs.json>", "path": "<absolute token_costs.json path>"}` before outcome recording. This explicitly links the ledger attempt to its cost evidence. On failure, report `Token costs: unavailable — <script error>` and continue: token accounting never blocks outcome recording, but its failure is always surfaced.
 7. If the pipeline executed or skipped all steps successfully, call `run-success-evaluate` with the original task, task evaluation, run evidence, execution graph, and output files from the task detail JSON.
 8. If `run-success-evaluate` returns strict JSON with boolean `success`, call `task-outcome-record` with the task detail JSON, run evidence, and success judgment.
 9. Return the run report, task success judgment, and outcome record path.

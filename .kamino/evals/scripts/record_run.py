@@ -168,6 +168,11 @@ def main(argv: list[str]) -> int:
     token_result = run(token_command, check=False)
     if token_result.returncode == 0:
         token_costs_path = json.loads(token_result.stdout)["output"]
+        evidence["verification_evidence"]["cost_artifact"] = {
+            "run_id": run_id,
+            "path": str(Path(token_costs_path).resolve()),
+        }
+        evidence_path.write_text(json.dumps(evidence, indent=2, sort_keys=True), encoding="utf-8")
     else:
         # Non-fatal by design: outcome recording must not depend on transcript
         # availability, but the failure is surfaced, never swallowed.

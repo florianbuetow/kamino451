@@ -16,7 +16,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
-from task_outcome_ledger_common import (
+from task_outcome_ledger_common import (  # noqa: E402 - direct CLI/module loading share this bootstrap
     LEDGER_SCHEMA_VERSION,
     failure_mode_for_judgment,
     load_json_file,
@@ -125,6 +125,9 @@ def build_record(
         "verification_evidence": run_evidence["verification_evidence"],
         "success_judgment": success_judgment,
     }
+    cost_artifact = run_evidence["verification_evidence"].get("cost_artifact")
+    if cost_artifact is not None:
+        record["cost_artifact"] = cost_artifact
     validate_ledger_record(record, "new ledger record")
     return record
 

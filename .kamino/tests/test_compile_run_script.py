@@ -26,6 +26,7 @@ def write_json(path: Path, payload: object) -> None:
 
 DEMO_TASK_ID = "9-demo-task"
 DEMO_EVAL_ID = "task-demo123"
+DEFAULT_BLUEPRINT_REL = ".kamino/agents/library/coding/python-coding-agent-single-shot.md"
 
 
 def build_corpus_task(corpus_root: Path, *, with_tests: bool = True) -> Path:
@@ -186,6 +187,51 @@ def build_tasks_root(root: Path, *, eval_id: str = DEMO_EVAL_ID) -> Path:
     return root
 
 
+def build_recommendation(
+    path: Path,
+    *,
+    task_id: str = DEMO_EVAL_ID,
+    model: str = "sonnet",
+    effort: str = "high",
+    blueprints: list[str] | None = None,
+) -> dict:
+    payload = {
+        "schema_version": "kamino451.route-recommendation.v2",
+        "task_id": task_id,
+        "task_type": "coding",
+        "recommended_model": model,
+        "recommended_effort": effort,
+        "recommended_agent_blueprints": blueprints if blueprints is not None else [DEFAULT_BLUEPRINT_REL],
+        "source": "success_rate_policy",
+        "candidate_scores": [
+            {
+                "model": model,
+                "effort": effort,
+                "agent_blueprints": blueprints if blueprints is not None else [DEFAULT_BLUEPRINT_REL],
+                "base_score": "0.91",
+                "cost_penalty": "0.04",
+                "final_score": "0.87",
+                "forecast_scope": "agent_model_effort",
+                "cost_estimate": {
+                    "status": "available",
+                    "amount_usd": "0.0123",
+                    "sample_count": 4,
+                    "usage_forecast": {"input_tokens": "1200", "output_tokens": "400"},
+                    "rate_card": {
+                        "model_id": "claude-sonnet-test",
+                        "pricing_version": "test-v1",
+                        "pricing_hash": "sha256:test",
+                    },
+                },
+            }
+        ],
+        "cost_policy": {"status": "applied", "weight": 0.2, "scale_usd": 0.1},
+        "rationale": "fixture recommendation",
+    }
+    write_json(path, payload)
+    return payload
+
+
 def run_compile(
     *,
     corpus_dir: Path,
@@ -198,36 +244,43 @@ def run_compile(
     effort: str = "high",
     mode: str = "prescribed",
     sweep_id: str = "t-sweep",
+    recommendation: Path | None = None,
+    blueprint: Path | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Run compile_run.py through uv run."""
+    command = [
+        "uv",
+        "run",
+        ".kamino/evals/scripts/compile_run.py",
+        "--corpus-dir",
+        str(corpus_dir),
+        "--task-id",
+        task_id,
+        "--eval-id",
+        eval_id,
+        "--attempt",
+        str(attempt),
+        "--model",
+        model,
+        "--effort",
+        effort,
+        "--mode",
+        mode,
+        "--sweep-id",
+        sweep_id,
+        "--tasks-root",
+        str(tasks_root),
+        "--dispatch-root",
+        str(dispatch_root),
+        "--format",
+        "json",
+    ]
+    if recommendation is not None:
+        command.extend(["--recommendation", str(recommendation)])
+    if blueprint is not None:
+        command.extend(["--blueprint", str(blueprint)])
     return subprocess.run(
-        [
-            "uv",
-            "run",
-            ".kamino/evals/scripts/compile_run.py",
-            "--corpus-dir",
-            str(corpus_dir),
-            "--task-id",
-            task_id,
-            "--eval-id",
-            eval_id,
-            "--attempt",
-            str(attempt),
-            "--model",
-            model,
-            "--effort",
-            effort,
-            "--mode",
-            mode,
-            "--sweep-id",
-            sweep_id,
-            "--tasks-root",
-            str(tasks_root),
-            "--dispatch-root",
-            str(dispatch_root),
-            "--format",
-            "json",
-        ],
+        command,
         cwd=repo_root(),
         capture_output=True,
         text=True,
@@ -288,6 +341,8 @@ def test_compile_run_stages_isolated_layout_and_stamps_sweep_metadata(tmp_path: 
     route_decision = json.loads((run_dir / "route-decision.json").read_text(encoding="utf-8"))
     assert route_decision["sweep"] == {"mode": "prescribed", "sweep_id": "t-sweep"}
     assert route_decision["attempt"] == 2
+    assert "routing_recommendation" not in route_decision
+    assert "recommendation_binding_matches" not in route_decision
 
     assert (tasks_root / "details" / f"{DEMO_EVAL_ID}-a2.json").is_file()
 
@@ -329,3 +384,170 @@ def test_compile_run_rejects_corpus_task_without_tests_directory(tmp_path: Path)
 
     assert process.returncode != 0
     assert "tests" in process.stderr
+
+
+def test_compile_run_retains_full_matching_routing_recommendation(tmp_path: Path) -> None:
+    corpus_root = tmp_path / "corpus-demo"
+    corpus_root.mkdir()
+    build_corpus_task(corpus_root)
+    tasks_root = build_tasks_root(tmp_path / "tasks-root")
+    recommendation_path = tmp_path / "recommendation.json"
+    recommendation = build_recommendation(recommendation_path)
+
+    process = run_compile(
+        corpus_dir=corpus_root,
+        task_id=DEMO_TASK_ID,
+        eval_id=DEMO_EVAL_ID,
+        tasks_root=tasks_root,
+        dispatch_root=tmp_path / "dispatch-queue",
+        model="sonnet",
+        effort="high",
+        mode="auto",
+        recommendation=recommendation_path,
+    )
+    assert process.returncode == 0, process.stderr
+
+    run_dir = Path(json.loads(process.stdout)["run_dir"])
+    route = json.loads((run_dir / "route-decision.json").read_text(encoding="utf-8"))
+    assert route["routing_recommendation"] == recommendation
+    assert route["recommendation_binding_matches"] is True
+    assert route["recommendation_estimate_applicability"] == {
+        "applicable": True,
+        "reason": "available cost estimate applies to the exact recommended binding",
+    }
+    assert route["routing_recommendation"]["candidate_scores"][0]["cost_estimate"]["rate_card"] == {
+        "model_id": "claude-sonnet-test",
+        "pricing_hash": "sha256:test",
+        "pricing_version": "test-v1",
+    }
+
+
+def test_compile_run_records_override_without_applying_original_estimate(tmp_path: Path) -> None:
+    corpus_root = tmp_path / "corpus-demo"
+    corpus_root.mkdir()
+    build_corpus_task(corpus_root)
+    tasks_root = build_tasks_root(tmp_path / "tasks-root")
+    recommendation_path = tmp_path / "recommendation.json"
+    recommendation = build_recommendation(
+        recommendation_path,
+        model="haiku",
+        effort="medium",
+        blueprints=[".kamino/agents/library/coding/python-cli-agent.md"],
+    )
+
+    process = run_compile(
+        corpus_dir=corpus_root,
+        task_id=DEMO_TASK_ID,
+        eval_id=DEMO_EVAL_ID,
+        tasks_root=tasks_root,
+        dispatch_root=tmp_path / "dispatch-queue",
+        model="sonnet",
+        effort="high",
+        mode="auto",
+        recommendation=recommendation_path,
+    )
+    assert process.returncode == 0, process.stderr
+
+    run_dir = Path(json.loads(process.stdout)["run_dir"])
+    route = json.loads((run_dir / "route-decision.json").read_text(encoding="utf-8"))
+    assert route["routing_recommendation"] == recommendation
+    assert route["model"] == "sonnet"
+    assert route["effort"] == "high"
+    assert route["recommendation_binding_matches"] is False
+    applicability = route["recommendation_estimate_applicability"]
+    assert applicability["applicable"] is False
+    assert "model 'sonnet' != recommended 'haiku'" in applicability["reason"]
+    assert "effort 'high' != recommended 'medium'" in applicability["reason"]
+    assert "blueprint" in applicability["reason"]
+
+
+def test_compile_run_matching_binding_marks_unavailable_estimate_inapplicable(tmp_path: Path) -> None:
+    corpus_root = tmp_path / "corpus-demo"
+    corpus_root.mkdir()
+    build_corpus_task(corpus_root)
+    tasks_root = build_tasks_root(tmp_path / "tasks-root")
+    recommendation_path = tmp_path / "recommendation.json"
+    recommendation = build_recommendation(recommendation_path)
+    recommendation["cost_policy"]["status"] = "unavailable"
+    recommendation["candidate_scores"][0]["cost_estimate"] = {
+        "status": "unavailable",
+        "amount_usd": None,
+        "reason": "not enough historical samples",
+    }
+    write_json(recommendation_path, recommendation)
+
+    process = run_compile(
+        corpus_dir=corpus_root,
+        task_id=DEMO_TASK_ID,
+        eval_id=DEMO_EVAL_ID,
+        tasks_root=tasks_root,
+        dispatch_root=tmp_path / "dispatch-queue",
+        model="sonnet",
+        effort="high",
+        mode="auto",
+        recommendation=recommendation_path,
+    )
+    assert process.returncode == 0, process.stderr
+
+    run_dir = Path(json.loads(process.stdout)["run_dir"])
+    route = json.loads((run_dir / "route-decision.json").read_text(encoding="utf-8"))
+    assert route["recommendation_binding_matches"] is True
+    assert route["recommendation_estimate_applicability"] == {
+        "applicable": False,
+        "reason": "no available cost estimate for the matching binding",
+    }
+
+
+def test_compile_run_labels_fallback_cost_as_blueprint_mixture(tmp_path: Path) -> None:
+    corpus_root = tmp_path / "corpus-demo"
+    corpus_root.mkdir()
+    build_corpus_task(corpus_root)
+    tasks_root = build_tasks_root(tmp_path / "tasks-root")
+    recommendation_path = tmp_path / "recommendation.json"
+    recommendation = build_recommendation(recommendation_path, blueprints=[])
+    recommendation["candidate_scores"][0]["forecast_scope"] = "model_effort_blueprint_mixture"
+    write_json(recommendation_path, recommendation)
+
+    process = run_compile(
+        corpus_dir=corpus_root,
+        task_id=DEMO_TASK_ID,
+        eval_id=DEMO_EVAL_ID,
+        tasks_root=tasks_root,
+        dispatch_root=tmp_path / "dispatch-queue",
+        model="sonnet",
+        effort="high",
+        mode="auto",
+        recommendation=recommendation_path,
+    )
+    assert process.returncode == 0, process.stderr
+
+    run_dir = Path(json.loads(process.stdout)["run_dir"])
+    route = json.loads((run_dir / "route-decision.json").read_text(encoding="utf-8"))
+    assert route["recommendation_binding_matches"] is True
+    applicability = route["recommendation_estimate_applicability"]
+    assert applicability["applicable"] is True
+    assert "historical blueprint mixture" in applicability["reason"]
+    assert "not as an exact blueprint quote" in applicability["reason"]
+
+
+def test_compile_run_rejects_recommendation_for_other_task_before_artifacts(tmp_path: Path) -> None:
+    corpus_root = tmp_path / "corpus-demo"
+    corpus_root.mkdir()
+    build_corpus_task(corpus_root)
+    tasks_root = build_tasks_root(tmp_path / "tasks-root")
+    recommendation_path = tmp_path / "recommendation.json"
+    build_recommendation(recommendation_path, task_id="different-task")
+    dispatch_root = tmp_path / "dispatch-queue"
+
+    process = run_compile(
+        corpus_dir=corpus_root,
+        task_id=DEMO_TASK_ID,
+        eval_id=DEMO_EVAL_ID,
+        tasks_root=tasks_root,
+        dispatch_root=dispatch_root,
+        recommendation=recommendation_path,
+    )
+    assert process.returncode != 0
+    assert "does not match eval_id" in process.stderr
+    assert not dispatch_root.exists()
+    assert not (tasks_root / "details").exists()

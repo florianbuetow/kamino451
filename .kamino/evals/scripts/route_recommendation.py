@@ -7,25 +7,30 @@ import argparse
 import json
 import sys
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from decimal import Decimal
 from pathlib import Path
+
+from cost_routing import score_with_costs
+from route_cost_estimation import estimate_route_cost
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
-from task_outcome_ledger_common import (
+from task_outcome_ledger_common import (  # noqa: E402 - direct CLI/module loading share this bootstrap
     load_json_file,
     load_ledger_records,
     load_routing_config,
+    DEFAULT_COST_POLICY,
     parse_difficulty_placement,
     parse_task_evaluation,
 )
 
 RECOMMENDATION_SCHEMA_VERSION = "kamino451.route-recommendation.v2"
 
-# Cheap-first order used to rank qualified combinations, break weight ties, and seed cold starts.
+# Explicit cold-start policy only; evidence-based scores never use model prices implicitly.
 MODEL_LADDER = ["haiku", "sonnet", "opus"]
-EFFORT_LADDER = ["low", "medium", "high"]
 
 
 @dataclass
@@ -54,6 +59,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--task-eval", required=True, help="Path to the current task evaluation JSON.")
     parser.add_argument("--difficulty", required=True, help="Path to the current difficulty placement JSON.")
     parser.add_argument("--config", required=False, help="Path to the central factory config JSON (default: .kamino/factory-config.json).")
+    parser.add_argument("--pricing-at", help="ISO timestamp for historical pricing; requires dated rates.")
+    parser.add_argument("--known-at", help="ISO knowledge cutoff for historical outcomes and prices.")
     parser.add_argument("--format", choices=["json"], required=True, help="Output format.")
     return parser.parse_args(argv)
 
@@ -67,16 +74,6 @@ def record_weight(task_evaluation: dict[str, object], difficulty: dict[str, obje
     return type_weight * proximity
 
 
-def ladder_rank(model: str) -> int:
-    """Rank a model on the cheap-first ladder; unknown models sort last."""
-    return MODEL_LADDER.index(model) if model in MODEL_LADDER else len(MODEL_LADDER)
-
-
-def effort_rank(effort: str) -> int:
-    """Rank an effort on the cheap-first ladder; unknown efforts sort last."""
-    return EFFORT_LADDER.index(effort) if effort in EFFORT_LADDER else len(EFFORT_LADDER)
-
-
 def routing_config_payload(routing_config: dict[str, object]) -> dict[str, object]:
     """Echo the routing config values used for this recommendation."""
     return {
@@ -84,6 +81,7 @@ def routing_config_payload(routing_config: dict[str, object]) -> dict[str, objec
         "min_attempts_for_rate": routing_config["min_attempts_for_rate"],
         "config_source": routing_config["config_source"],
         "config_path": routing_config["config_path"],
+        "cost": routing_config.get("cost", DEFAULT_COST_POLICY),
     }
 
 
@@ -122,26 +120,15 @@ def qualified_combos(
     """Return combinations whose same-task-type success rate clears the configured threshold.
 
     Qualification needs at least min_attempts_for_rate same-task-type attempts and a rate
-    strictly above success_rate_threshold. Qualifiers are ranked cheap-first (model ladder,
-    then effort ladder, then similarity support) — deliberately NOT by highest rate.
+    strictly above success_rate_threshold. Cost is applied after qualification.
     """
     threshold = float(str(routing_config["success_rate_threshold"]))
     min_attempts = int(str(routing_config["min_attempts_for_rate"]))
-    qualified = [
+    return [
         combo
         for combo in combos.values()
         if combo.same_type_attempts >= min_attempts and combo.same_type_successes / combo.same_type_attempts > threshold
     ]
-    qualified.sort(
-        key=lambda combo: (
-            ladder_rank(combo.model),
-            effort_rank(combo.effort),
-            -combo.support,
-            combo.agent_blueprints,
-            combo.effort,
-        ),
-    )
-    return qualified
 
 
 def combo_payload(combo: ComboStats) -> dict[str, object]:
@@ -162,6 +149,7 @@ def recommend(
     task_evaluation: dict[str, object],
     difficulty: dict[str, object],
     routing_config: dict[str, object],
+    cost_estimator=None,
 ) -> dict[str, object]:
     """Build the recommendation: success-rate policy, then weighted-majority fallback, then cold start."""
     combos = build_combo_stats(ledger_records, task_evaluation, difficulty)
@@ -179,6 +167,8 @@ def recommend(
 
     qualified = qualified_combos(combos, routing_config)
     if len(qualified) > 0:
+        ranked, cost_policy = rank_candidates(qualified, routing_config, cost_estimator)
+        qualified = [item[0] for item in ranked]
         chosen = qualified[0]
         return {
             **base_payload,
@@ -188,11 +178,12 @@ def recommend(
             "source": "success_rate_policy",
             "selected_combination": combo_payload(chosen),
             "qualified_combinations": [combo_payload(combo) for combo in qualified],
+            "cost_policy": cost_policy,
+            "candidate_scores": [item[1] for item in ranked],
             "rationale": (
                 f"Success-rate policy: agent+model+effort combinations with a success rate above "
                 f"{threshold} over at least {min_attempts} same-task-type attempts qualify; "
-                "qualifiers are ranked cheap-first (model ladder, then effort, then similarity support), "
-                "not by highest rate."
+                "qualifiers are ranked by normalized similarity support minus the optional weighted cost penalty."
             ),
         }
 
@@ -212,13 +203,23 @@ def recommend(
             "source": "cold_start_policy",
             "qualified_combinations": [],
             "support": {},
+            "cost_policy": {"status": "not_applicable", "reason": "no historical candidates"},
+            "candidate_scores": [],
             "rationale": "No successful historical records; cheap-first escalation policy applies.",
         }
 
-    best_key = min(
-        support,
-        key=lambda key: (-support[key], ladder_rank(key[0]), key[1]),
-    )
+    # Fallback retains model/effort aggregation because blueprint selection is
+    # not supported by the success-rate gate. Its usage forecast is explicitly
+    # a historical blueprint mixture, not a forecast for a prescribed agent.
+    fallback = []
+    for (model, effort), weight in support.items():
+        fallback.append(ComboStats(
+            agent_blueprints=(), model=model, effort=effort, support=weight,
+            records=[record for record in ledger_records
+                     if record["model"] == model and record["effort"] == effort],
+        ))
+    ranked, cost_policy = rank_candidates(fallback, routing_config, cost_estimator)
+    best_key = (ranked[0][0].model, ranked[0][0].effort)
     return {
         **base_payload,
         "recommended_model": best_key[0],
@@ -227,13 +228,56 @@ def recommend(
         "source": "weighted_majority",
         "qualified_combinations": [],
         "support": {f"{model}/{effort}": round(weight, 6) for (model, effort), weight in sorted(support.items())},
+        "cost_policy": cost_policy,
+        "candidate_scores": [item[1] for item in ranked],
         "rationale": (
             "No combination cleared the success-rate qualification "
             f"(rate above {threshold} over at least {min_attempts} same-task-type attempts). "
             "Weighted majority over successful outcomes: weight = task-type match (1.0 same / 0.3 different) "
-            "x 1/(1+|pairwise difficulty distance|); ties break cheap-first."
+            "x 1/(1+|pairwise difficulty distance|), normalized by maximum support; "
+            "the optional cost penalty is subtracted, with stable identity tie-breaking."
         ),
     }
+
+
+def rank_candidates(candidates, routing_config, estimator):
+    """Compute the baseline independently, then optionally apply cost evidence."""
+    policy = routing_config.get("cost", DEFAULT_COST_POLICY)
+    enabled = policy["enabled"] and policy["weight"] > 0
+    maximum = max(candidate.support for candidate in candidates)
+    baseline = [Decimal(str(candidate.support)) / Decimal(str(maximum))
+                if maximum else Decimal(0) for candidate in candidates]
+    estimates = []
+    for candidate in candidates:
+        if not enabled:
+            estimates.append({"status": "disabled", "amount_usd": None})
+        elif estimator is None:
+            estimates.append({"status": "unavailable", "amount_usd": None, "reason": "no estimator"})
+        else:
+            estimates.append(estimator(candidate))
+    costs = [estimate["amount_usd"] if estimate["status"] == "available" else None
+             for estimate in estimates]
+    scores, penalties = score_with_costs(baseline, costs, weight=policy["weight"] if enabled else 0,
+                                         scale_usd=policy["scale_usd"])
+    status = "disabled" if not enabled else ("applied" if all(cost is not None for cost in costs) else "unavailable")
+    ranked = []
+    for candidate, base, score, penalty, estimate in zip(candidates, baseline, scores, penalties, estimates):
+        ranked.append((candidate, {
+            **combo_payload(candidate), "base_score": str(base), "final_score": str(score),
+            "cost_penalty": str(penalty), "cost_estimate": estimate,
+            "forecast_scope": "agent_model_effort" if candidate.agent_blueprints else "model_effort_blueprint_mixture",
+        }))
+    ranked.sort(key=lambda item: (-Decimal(item[1]["final_score"]), item[0].agent_blueprints,
+                                 item[0].model, item[0].effort))
+    return ranked, {**policy, "status": status,
+                    "reason": "all candidates need estimates; otherwise baseline scoring applies"}
+
+
+def parse_time(value):
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise ValueError("pricing and knowledge timestamps must include a timezone")
+    return parsed
 
 
 def format_json(payload: dict[str, object]) -> str:
@@ -256,7 +300,18 @@ def main(argv: list[str]) -> int:
             ledger_records = []
         task_evaluation = parse_task_evaluation(load_json_file(args.task_eval, "task evaluation"))
         difficulty = parse_difficulty_placement(load_json_file(args.difficulty, "difficulty placement"))
-        print(format_json(recommend(ledger_records, task_evaluation, difficulty, routing_config)))
+        now = datetime.now(timezone.utc)
+        pricing_at = parse_time(args.pricing_at) if args.pricing_at else (parse_time(args.known_at) if args.known_at else now)
+        known_at = parse_time(args.known_at) if args.known_at else now
+        ledger_records = [record for record in ledger_records if parse_time(record["timestamp"]) <= known_at]
+        def estimator(combo):
+            return estimate_route_cost(
+                combo.records, task_type=task_evaluation["task_type"],
+                difficulty=difficulty["estimated_difficulty_score"], config_path=routing_config["config_path"],
+                artifact_base=ledger_path.resolve().parent, pricing_at=pricing_at, known_at=known_at,
+                min_samples=routing_config["cost"]["min_samples"], historical=bool(args.pricing_at or args.known_at),
+            )
+        print(format_json(recommend(ledger_records, task_evaluation, difficulty, routing_config, estimator)))
         return 0
     except Exception as exc:
         print(f"ERROR: {exc}", file=sys.stderr)

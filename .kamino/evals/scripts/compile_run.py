@@ -32,6 +32,7 @@ REPO = Path(__file__).resolve().parents[3]
 TASKS = REPO / ".kamino" / "evals" / "tasks"
 DEFAULT_BLUEPRINT = REPO / ".kamino" / "agents" / "library" / "coding" / "python-coding-agent-single-shot.md"
 IMAGE_SUFFIXES = {".png", ".gif", ".jpg", ".jpeg", ".webp"}
+RECOMMENDATION_SCHEMA_VERSION = "kamino451.route-recommendation.v2"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -46,6 +47,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--mode", choices=["auto", "prescribed"], required=True, help="auto: factory routing chose the agent; prescribed: caller pinned it.")
     parser.add_argument("--sweep-id", required=True, help="Identifier grouping all attempts of one sweep.")
     parser.add_argument("--binding-reason", default=None, help="Why this blueprint/model was bound. Defaults per --mode.")
+    parser.add_argument(
+        "--recommendation",
+        default=None,
+        help="Optional route recommendation JSON to retain with the compiled binding decision.",
+    )
     parser.add_argument("--tasks-root", default=str(TASKS), help="Eval tasks root holding evaluations/, difficulty/, candidates/, details/. Defaults to the repo's.")
     parser.add_argument("--dispatch-root", default=str(REPO / ".kamino" / "dispatch-queue"), help="Directory run dirs are created under. Defaults to the repo's dispatch queue.")
     parser.add_argument("--format", choices=["json"], required=True, help="Output format.")
@@ -91,6 +97,80 @@ def assert_isolation(run_dir: Path) -> None:
         raise SystemExit(f"isolation violation: test material inside work/: {leaked_tests[0]}")
 
 
+def load_recommendation(path: Path, eval_id: str) -> dict:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise SystemExit(f"cannot load routing recommendation {path}: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise SystemExit(f"routing recommendation must be a JSON object: {path}")
+    if payload.get("schema_version") != RECOMMENDATION_SCHEMA_VERSION:
+        raise SystemExit(
+            f"routing recommendation needs schema_version {RECOMMENDATION_SCHEMA_VERSION!r}: {path}"
+        )
+    if payload.get("task_id") != eval_id:
+        raise SystemExit(
+            f"routing recommendation task_id {payload.get('task_id')!r} does not match eval_id {eval_id!r}"
+        )
+    for field in ("recommended_model", "recommended_effort"):
+        if not isinstance(payload.get(field), str) or not payload[field].strip():
+            raise SystemExit(f"routing recommendation needs non-empty {field}: {path}")
+    blueprints = payload.get("recommended_agent_blueprints")
+    if not isinstance(blueprints, list) or not all(isinstance(item, str) and item for item in blueprints):
+        raise SystemExit(f"routing recommendation recommended_agent_blueprints must be a string array: {path}")
+    return payload
+
+
+def recommendation_binding(recommendation: dict, model: str, effort: str, blueprint: str) -> tuple[bool, dict]:
+    mismatches = []
+    if recommendation["recommended_model"] != model:
+        mismatches.append(f"model {model!r} != recommended {recommendation['recommended_model']!r}")
+    if recommendation["recommended_effort"] != effort:
+        mismatches.append(f"effort {effort!r} != recommended {recommendation['recommended_effort']!r}")
+    recommended_blueprints = recommendation["recommended_agent_blueprints"]
+    if recommended_blueprints and recommended_blueprints != [blueprint]:
+        mismatches.append(
+            f"blueprint {blueprint!r} != recommended {recommended_blueprints!r}"
+        )
+    matches = not mismatches
+    if not matches:
+        return False, {
+            "applicable": False,
+            "reason": "original recommendation estimate does not apply to the actual override: " + "; ".join(mismatches),
+        }
+
+    cost_policy = recommendation.get("cost_policy")
+    candidate_scores = recommendation.get("candidate_scores")
+    if not isinstance(cost_policy, dict) or cost_policy.get("status") != "applied" or not isinstance(candidate_scores, list):
+        return True, {"applicable": False, "reason": "no available cost estimate for the matching binding"}
+    selected_score = next(
+        (
+            score
+            for score in candidate_scores
+            if isinstance(score, dict)
+            and score.get("model") == recommendation["recommended_model"]
+            and score.get("effort") == recommendation["recommended_effort"]
+            and (
+                not recommended_blueprints
+                or score.get("agent_blueprints") == recommended_blueprints
+            )
+        ),
+        None,
+    )
+    estimate = selected_score.get("cost_estimate") if isinstance(selected_score, dict) else None
+    if not isinstance(estimate, dict) or estimate.get("status") != "available":
+        return True, {"applicable": False, "reason": "no available cost estimate for the matching binding"}
+    if not recommended_blueprints or selected_score.get("forecast_scope") == "model_effort_blueprint_mixture":
+        return True, {
+            "applicable": True,
+            "reason": (
+                "available cost estimate applies to the recommended model/effort as a historical blueprint mixture, "
+                "not as an exact blueprint quote"
+            ),
+        }
+    return True, {"applicable": True, "reason": "available cost estimate applies to the exact recommended binding"}
+
+
 def main(argv: list[str]) -> int:
     args = build_parser().parse_args(argv)
 
@@ -107,6 +187,22 @@ def main(argv: list[str]) -> int:
     for artifact in ("evaluations", "difficulty", "candidates"):
         if not (tasks_root / artifact / f"{args.eval_id}.json").is_file():
             raise SystemExit(f"missing staged {artifact}/{args.eval_id}.json — run the difficulty pipeline first")
+
+    try:
+        blueprint_rel = str(blueprint.relative_to(REPO))
+    except ValueError:
+        blueprint_rel = str(blueprint)
+    recommendation = (
+        load_recommendation(Path(args.recommendation).resolve(), args.eval_id)
+        if args.recommendation
+        else None
+    )
+    recommendation_binding_matches = None
+    recommendation_estimate_applicability = None
+    if recommendation is not None:
+        recommendation_binding_matches, recommendation_estimate_applicability = recommendation_binding(
+            recommendation, args.model, args.effort, blueprint_rel
+        )
 
     corpus_label = corpus_dir.name.removeprefix("corpus-")
     timestamp = datetime.now(timezone.utc).strftime("%y%m%d-%H%M%S")
@@ -142,11 +238,6 @@ def main(argv: list[str]) -> int:
     if (run_dir / "verify" / "tests_hidden").is_dir():
         test_dirs.append(run_dir / "verify" / "tests_hidden")
     verify_command = f"uv run --project {REPO} pytest {' '.join(str(path) for path in test_dirs)} -q"
-
-    try:
-        blueprint_rel = str(blueprint.relative_to(REPO))
-    except ValueError:
-        blueprint_rel = str(blueprint)
 
     (run_dir / "execution-graph.md").write_text(
         f"""# Execution Graph — {run_id}
@@ -184,6 +275,14 @@ def main(argv: list[str]) -> int:
         "attempt": args.attempt,
         "sweep": {"mode": args.mode, "sweep_id": args.sweep_id},
     }
+    if recommendation is not None:
+        route_decision.update(
+            {
+                "routing_recommendation": recommendation,
+                "recommendation_binding_matches": recommendation_binding_matches,
+                "recommendation_estimate_applicability": recommendation_estimate_applicability,
+            }
+        )
     (run_dir / "route-decision.json").write_text(json.dumps(route_decision, indent=2, sort_keys=True), encoding="utf-8")
 
     run(

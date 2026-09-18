@@ -14,13 +14,18 @@ ambiguous matches fail loudly — nothing is guessed.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import re
 import shutil
 import sys
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 from pathlib import Path
+
+from cost_estimation import CALCULATOR_VERSION, TokenUsage, calculate_cost
+from pricing_catalog import CACHE_RATE_KEYS, PricingCatalogError, load_catalog, resolve_rates
 
 REPO = Path(__file__).resolve().parents[3]
 SCHEMA_VERSION = "kamino451.token-costs.v1"
@@ -29,7 +34,6 @@ MATCH_WINDOW_SECONDS = 120
 PROBE_BYTES = 262144
 USAGE_KEYS = ("input_tokens", "output_tokens", "cache_creation_input_tokens", "cache_read_input_tokens")
 TRACE_KEYS = ("run_id", "step", "attempt", "agent_file", "model", "status", "started_at", "ended_at")
-CACHE_RATE_KEYS = ("cache_read_per_mtok", "cache_write_5m_per_mtok", "cache_write_1h_per_mtok")
 
 
 def default_transcripts_root() -> Path:
@@ -94,7 +98,10 @@ def deduped_assistant_calls(entries: list[dict]) -> list[dict]:
             continue
         if message_id not in calls:
             order.append(message_id)
-        calls[message_id] = {"model_id": str(model), "usage": usage, "content": message.get("content")}
+            calls[message_id] = {"call_id": str(message_id), "timestamp": entry.get("timestamp")}
+        calls[message_id].update(
+            {"model_id": str(model), "usage": usage, "content": message.get("content")}
+        )
     return [calls[message_id] for message_id in order]
 
 
@@ -136,6 +143,10 @@ def cache_creation_split(calls: list[dict]) -> dict[str, int]:
                 continue
         split["5m"] += total
     return split
+
+
+def call_cache_creation_split(call: dict) -> dict[str, int]:
+    return cache_creation_split([call])
 
 
 def content_chars(content: object) -> int:
@@ -276,29 +287,17 @@ def match_transcript(root: Path, record: dict) -> tuple[Path, list[dict]]:
 
 
 def load_pricing(config_path: Path) -> dict:
-    if not config_path.is_file():
-        raise SystemExit(f"factory config not found: {config_path}")
-    config = json.loads(config_path.read_text(encoding="utf-8"))
-    pricing = config.get("pricing")
-    if not isinstance(pricing, dict) or not isinstance(pricing.get("models"), dict):
-        raise SystemExit(f"factory config has no pricing.models table: {config_path}")
-    for name, entry in pricing["models"].items():
-        for key in ("input_per_mtok", "output_per_mtok"):
-            if not isinstance(entry.get(key), (int, float)) or entry[key] <= 0:
-                raise SystemExit(f"pricing model '{name}' needs positive {key}")
-        cache_keys_present = [key for key in CACHE_RATE_KEYS if key in entry]
-        if cache_keys_present and len(cache_keys_present) != len(CACHE_RATE_KEYS):
-            raise SystemExit(f"pricing model '{name}' must set all of {CACHE_RATE_KEYS} or none")
-        for key in cache_keys_present:
-            if not isinstance(entry[key], (int, float)) or entry[key] <= 0:
-                raise SystemExit(f"pricing model '{name}' needs positive {key}")
-    return pricing
+    try:
+        return load_catalog(config_path)
+    except PricingCatalogError as exc:
+        raise SystemExit(str(exc)) from exc
 
 
 def resolve_pricing(pricing: dict, short_model: str, model_ids: set[str]) -> tuple[str, dict]:
     """Resolve the pricing entry for a step; a transcript model id outside the trace
     model's registered ids is a contract violation (silent substitution), not a guess."""
-    models = pricing["models"]
+    pricing_table = pricing["pricing"]
+    models = pricing_table.get("models", {})
     if short_model in models:
         entry = models[short_model]
         registered = set(entry.get("model_ids", []))
@@ -315,44 +314,91 @@ def resolve_pricing(pricing: dict, short_model: str, model_ids: set[str]) -> tup
     raise SystemExit(f"no pricing entry covers model '{short_model}' / transcript ids {sorted(model_ids)}")
 
 
-def cost_block(
-    measured: dict[str, int],
-    estimated: dict,
-    pricing_model: str,
-    entry: dict,
-    cache_split: dict[str, int],
-) -> dict:
-    basis = "measured" if any(measured.values()) else "estimated"
-    input_rate = float(entry["input_per_mtok"])
-    has_cache_rates = all(key in entry for key in CACHE_RATE_KEYS)
-    if basis == "measured":
-        billable_input = (
-            measured["input_tokens"] + measured["cache_creation_input_tokens"] + measured["cache_read_input_tokens"]
-        )
-        output_tokens = measured["output_tokens"]
-        if has_cache_rates:
-            input_usd = round(
-                (
-                    measured["input_tokens"] * input_rate
-                    + measured["cache_read_input_tokens"] * float(entry["cache_read_per_mtok"])
-                    + cache_split["5m"] * float(entry["cache_write_5m_per_mtok"])
-                    + cache_split["1h"] * float(entry["cache_write_1h_per_mtok"])
-                )
-                / 1_000_000,
-                6,
-            )
+def resolved_rate_card(catalog: dict, model_id: str, timestamp: str, captured_at: datetime):
+    pricing = catalog["pricing"]
+    try:
+        if "rate_cards" in pricing:
+            rates = resolve_rates(catalog, model_id, parse_timestamp(timestamp), known_at=captured_at)
         else:
-            input_usd = round(billable_input * input_rate / 1_000_000, 6)
-    else:
-        billable_input = estimated["input_tokens"]
-        output_tokens = estimated["output_tokens"]
-        input_usd = round(billable_input * input_rate / 1_000_000, 6)
-    output_usd = round(output_tokens * float(entry["output_per_mtok"]) / 1_000_000, 6)
+            # Legacy tables describe only the snapshot being captured now. They do
+            # not claim to have been effective at the historical call timestamp.
+            rates = resolve_rates(
+                catalog,
+                model_id,
+                captured_at,
+                known_at=captured_at,
+                allow_legacy_current=True,
+            )
+    except PricingCatalogError as exc:
+        raise SystemExit(str(exc)) from exc
+    if rates.currency != "USD":
+        raise SystemExit(
+            f"token accounting writes cost_usd and cannot apply {rates.currency} rates for {model_id!r}"
+        )
+    return rates
+
+
+def normalized_usage(call: dict) -> TokenUsage:
+    usage = call["usage"]
+    split = call_cache_creation_split(call)
+    return TokenUsage(
+        input_tokens=usage.get("input_tokens", 0),
+        output_tokens=usage.get("output_tokens", 0),
+        cache_read_input_tokens=usage.get("cache_read_input_tokens", 0),
+        cache_write_5m_input_tokens=split["5m"],
+        cache_write_1h_input_tokens=split["1h"],
+    )
+
+
+def priced_call(call: dict, basis: str, rates) -> dict:
+    usage = normalized_usage(call)
+    estimate = calculate_cost(usage, rates)
     return {
+        "call_id": str(call["call_id"]),
+        "model_id": str(call["model_id"]),
+        "timestamp": str(call["timestamp"]),
         "basis": basis,
+        "usage": usage.to_dict(),
+        "rate_card": rates.to_dict(),
+        "cost_estimate": estimate.to_dict(),
+    }
+
+
+def estimated_priced_call(estimated: dict, model_id: str, timestamp: str, rates) -> dict:
+    usage = TokenUsage(input_tokens=estimated["input_tokens"], output_tokens=estimated["output_tokens"])
+    estimate = calculate_cost(usage, rates)
+    return {
+        "call_id": "estimated-session",
+        "model_id": model_id,
+        "timestamp": timestamp,
+        "basis": "estimated",
+        "usage": usage.to_dict(),
+        "rate_card": rates.to_dict(),
+        "cost_estimate": estimate.to_dict(),
+    }
+
+
+def decimal_cost(call: dict, field: str) -> Decimal:
+    return Decimal(call["cost_estimate"]["cost"][field])
+
+
+def legacy_cost_block(calls: list[dict], pricing_model: str, cache_aware: bool) -> dict:
+    input_cost = sum((decimal_cost(call, "input_cost") for call in calls), Decimal(0))
+    output_cost = sum((decimal_cost(call, "output_cost") for call in calls), Decimal(0))
+    billable_input = sum(
+        (
+            sum((Decimal(value) for key, value in call["usage"].items() if key != "output_tokens"), Decimal(0))
+            for call in calls
+        ),
+        Decimal(0),
+    )
+    input_usd = round(float(input_cost), 6)
+    output_usd = round(float(output_cost), 6)
+    return {
+        "basis": calls[0]["basis"],
         "pricing_model": pricing_model,
-        "billable_input_tokens": billable_input,
-        "cache_aware": basis == "measured" and has_cache_rates,
+        "billable_input_tokens": int(billable_input),
+        "cache_aware": cache_aware,
         "input": input_usd,
         "output": output_usd,
         "total": round(input_usd + output_usd, 6),
@@ -371,6 +417,7 @@ def skipped_entry(record: dict) -> dict:
         "transcript_source": None,
         "transcript_path": None,
         "api_calls": 0,
+        "calls": [],
         "measured": zero_usage,
         "session": {"unique_input_tokens": 0, "unique_output_tokens": 0},
         "estimated": {"input_chars": 0, "output_chars": 0, "chars_per_token": CHARS_PER_TOKEN,
@@ -417,12 +464,39 @@ def build_totals(steps: list[dict]) -> dict:
     return {"measured": measured, "session": session, "estimated": estimated, "cost_usd": cost}
 
 
+def reuse_existing_default_artifact(output: Path, run_id: str, trace_sha256: str) -> float:
+    try:
+        payload = json.loads(output.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise SystemExit(f"existing token cost artifact is unreadable; preserve it and use --output: {exc}") from exc
+    if not isinstance(payload, dict) or payload.get("schema_version") != SCHEMA_VERSION:
+        raise SystemExit("existing token cost artifact has an unsupported schema; preserve it and use --output")
+    if payload.get("run_id") != run_id:
+        raise SystemExit(
+            f"existing token cost artifact belongs to run {payload.get('run_id')!r}, expected {run_id!r}; "
+            "preserve it and use --output"
+        )
+    if payload.get("calculator_version") != CALCULATOR_VERSION:
+        raise SystemExit(
+            "existing token cost artifact lacks supported reproducible snapshots; preserve it and use --output"
+        )
+    if payload.get("trace_sha256") != trace_sha256:
+        raise SystemExit(
+            "current trace differs from the existing token cost artifact; preserve it and use --output"
+        )
+    try:
+        return float(payload["totals"]["cost_usd"]["total"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise SystemExit("existing token cost artifact has invalid totals; preserve it and use --output") from exc
+
+
 def main(argv: list[str]) -> int:
     args = build_parser().parse_args(argv)
     run_dir = Path(args.run_dir).resolve()
     trace_path = run_dir / "trace.jsonl"
     if not trace_path.is_file():
         raise SystemExit(f"no trace.jsonl in {run_dir}")
+    trace_sha256 = "sha256:" + hashlib.sha256(trace_path.read_bytes()).hexdigest()
     trace_records = load_jsonl(trace_path)
     if not trace_records:
         raise SystemExit(f"trace is empty: {trace_path}")
@@ -432,7 +506,17 @@ def main(argv: list[str]) -> int:
             raise SystemExit(f"malformed trace record (missing {missing}) in {trace_path}")
     run_id = str(trace_records[0]["run_id"])
 
+    output = Path(args.output) if args.output else run_dir / "token_costs.json"
+    if output.exists():
+        if args.output:
+            raise SystemExit(f"refusing to overwrite existing token cost artifact: {output}")
+        total_usd = reuse_existing_default_artifact(output, run_id, trace_sha256)
+        print(json.dumps({"status": "ok", "output": str(output), "reused": True,
+                          "total_usd": total_usd}, indent=2, sort_keys=True))
+        return 0
+
     pricing = load_pricing(Path(args.config))
+    captured_at = datetime.now(timezone.utc).replace(microsecond=0)
     transcripts_root = Path(args.transcripts_root)
     if not transcripts_root.is_dir():
         raise SystemExit(f"transcripts root not found: {transcripts_root}")
@@ -446,9 +530,34 @@ def main(argv: list[str]) -> int:
         calls = deduped_assistant_calls(entries)
         measured = usage_totals(calls)
         estimated = estimate_block(entries, calls)
-        cache_split = cache_creation_split(calls)
         model_ids = {call["model_id"] for call in calls}
-        pricing_model, entry = resolve_pricing(pricing, str(record["model"]), model_ids)
+        pricing_table = pricing["pricing"]
+        if "rate_cards" not in pricing_table:
+            pricing_model, entry = resolve_pricing(pricing, str(record["model"]), model_ids)
+            cache_aware = any(measured.values()) and all(key in entry for key in CACHE_RATE_KEYS)
+        else:
+            pricing_model = str(record["model"])
+            cache_aware = any(measured.values())
+        if any(measured.values()):
+            normalized_calls = [
+                priced_call(
+                    call,
+                    "measured",
+                    resolved_rate_card(pricing, call["model_id"], str(call["timestamp"]), captured_at),
+                )
+                for call in calls
+            ]
+        else:
+            if len(model_ids) != 1:
+                raise SystemExit(
+                    f"estimated usage for step {record['step']} requires exactly one transcript model id; "
+                    f"found {sorted(model_ids)}"
+                )
+            model_id = next(iter(model_ids))
+            rates = resolved_rate_card(pricing, model_id, str(record["started_at"]), captured_at)
+            normalized_calls = [
+                estimated_priced_call(estimated, model_id, str(record["started_at"]), rates)
+            ]
         steps.append(
             {
                 "step": int(record["step"]),
@@ -460,10 +569,11 @@ def main(argv: list[str]) -> int:
                 "transcript_source": str(source_path),
                 "transcript_path": copy_transcript(run_dir, record, source_path),
                 "api_calls": len(calls),
+                "calls": normalized_calls,
                 "measured": measured,
                 "session": session_block(measured),
                 "estimated": estimated,
-                "cost_usd": cost_block(measured, estimated, pricing_model, entry, cache_split),
+                "cost_usd": legacy_cost_block(normalized_calls, pricing_model, cache_aware),
             }
         )
 
@@ -474,14 +584,19 @@ def main(argv: list[str]) -> int:
 
     payload = {
         "schema_version": SCHEMA_VERSION,
+        "calculator_version": CALCULATOR_VERSION,
         "run_id": run_id,
-        "generated_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+        "trace_sha256": trace_sha256,
+        "generated_at": captured_at.isoformat().replace("+00:00", "Z"),
         "pricing_source": str(Path(args.config).resolve()),
         "steps": steps,
         "totals": build_totals(steps),
     }
-    output = Path(args.output) if args.output else run_dir / "token_costs.json"
-    output.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    try:
+        with output.open("x", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+    except FileExistsError as exc:
+        raise SystemExit(f"refusing to overwrite existing token cost artifact: {output}") from exc
     print(json.dumps({"status": "ok", "output": str(output),
                       "total_usd": payload["totals"]["cost_usd"]["total"]}, indent=2, sort_keys=True))
     return 0

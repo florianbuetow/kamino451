@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from pathlib import Path
 
 LEDGER_SCHEMA_VERSION = "kamino451.task-outcome-ledger.v1"
@@ -15,6 +16,7 @@ FACTORY_CONFIG_SCHEMA_VERSION = "kamino451.factory-config.v1"
 DEFAULT_FACTORY_CONFIG_PATH = ".kamino/factory-config.json"
 DEFAULT_SUCCESS_RATE_THRESHOLD = 0.9
 DEFAULT_MIN_ATTEMPTS_FOR_RATE = 3
+DEFAULT_COST_POLICY = {"enabled": False, "weight": 0.0, "scale_usd": 0.1, "min_samples": 3}
 ALLOWED_ROUTES = {"clone", "taskgraph", "createblueprint"}
 ALLOWED_CONFIDENCE = {"low", "medium", "high"}
 FORBIDDEN_CANDIDATE_SCORE_KEYS = {"score", "similarity_score", "score_components", "weight", "weights"}
@@ -164,6 +166,7 @@ def load_routing_config(raw_path: str | None) -> dict[str, object]:
             "min_attempts_for_rate": DEFAULT_MIN_ATTEMPTS_FOR_RATE,
             "config_source": "built_in_defaults",
             "config_path": str(path),
+            "cost": dict(DEFAULT_COST_POLICY),
         }
 
     mapping = require_mapping(load_json_file(str(path), "factory config"), "factory config")
@@ -181,11 +184,23 @@ def load_routing_config(raw_path: str | None) -> dict[str, object]:
         require_key(routing, "min_attempts_for_rate", "factory config.routing"),
         "factory config.routing.min_attempts_for_rate",
     )
+    cost = dict(DEFAULT_COST_POLICY)
+    configured_cost = require_mapping(routing.get("cost", {}), "factory config.routing.cost")
+    if set(configured_cost) - set(DEFAULT_COST_POLICY):
+        raise ValueError("routing.cost contains unknown settings")
+    cost.update(configured_cost)
+    cost["enabled"] = require_bool(cost["enabled"], "routing.cost.enabled")
+    for key in ("weight", "scale_usd"):
+        cost[key] = require_number(cost[key], f"routing.cost.{key}")
+        if not math.isfinite(cost[key]) or cost[key] < 0 or (key == "scale_usd" and cost[key] == 0):
+            raise ValueError(f"routing.cost.{key} must be finite and {'positive' if key == 'scale_usd' else 'nonnegative'}")
+    cost["min_samples"] = require_positive_int(cost["min_samples"], "routing.cost.min_samples")
     return {
         "success_rate_threshold": threshold,
         "min_attempts_for_rate": min_attempts,
         "config_source": "config_file",
         "config_path": str(path),
+        "cost": cost,
     }
 
 
@@ -656,6 +671,12 @@ def validate_ledger_record(payload: object, label: str) -> dict[str, object]:
     }
     if "task_detail_path" in mapping:
         validated["task_detail_path"] = require_string(require_key(mapping, "task_detail_path", label), f"{label}.task_detail_path")
+    if "cost_artifact" in mapping:
+        artifact = require_mapping(mapping["cost_artifact"], f"{label}.cost_artifact")
+        validated["cost_artifact"] = {
+            "run_id": require_string(require_key(artifact, "run_id", label), f"{label}.cost_artifact.run_id"),
+            "path": require_string(require_key(artifact, "path", label), f"{label}.cost_artifact.path"),
+        }
     return validated
 
 

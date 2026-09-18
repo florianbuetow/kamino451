@@ -58,12 +58,14 @@ reports/
 .LSOverride
 
 .copier-answers.yml
+.back*.json
 
 node_modules/
 
 docs
 
 data/
+temp/
 .kamino/dispatch-queue
 .kamino/tasks/*/transcripts/
 .kamino/auto-research

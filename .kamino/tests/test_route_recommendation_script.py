@@ -201,16 +201,16 @@ def test_failures_carry_no_weight(tmp_path: Path) -> None:
     assert payload["successful_records_considered"] == 1
 
 
-def test_tie_breaks_cheap_first(tmp_path: Path) -> None:
-    """Equal support goes to the cheaper model."""
+def test_tie_breaks_by_stable_identity(tmp_path: Path) -> None:
+    """Equal support uses lexical identity, without a price ladder."""
     records = [
         ledger_record(1, model="sonnet", effort="medium", success=True, task_type="code_generation", pairwise=0.5),
-        ledger_record(2, model="haiku", effort="medium", success=True, task_type="code_generation", pairwise=0.5),
+        ledger_record(2, model="opus", effort="medium", success=True, task_type="code_generation", pairwise=0.5),
     ]
 
     payload = run_recommendation(tmp_path, records)
 
-    assert payload["recommended_model"] == "haiku"
+    assert payload["recommended_model"] == "opus"
 
 
 def test_difficulty_proximity_outweighs_distant_matches(tmp_path: Path) -> None:
@@ -283,8 +283,8 @@ def test_success_rate_gate_overrides_cheap_first(tmp_path: Path) -> None:
     assert payload["selected_combination"]["same_task_type_success_rate"] == 1.0
 
 
-def test_qualified_combinations_pick_cheapest_not_highest_rate(tmp_path: Path) -> None:
-    """Among qualified combinations the cheaper model wins, not the higher success rate."""
+def test_qualified_combinations_use_similarity_support(tmp_path: Path) -> None:
+    """Once qualified, ten similar successes provide more support than eight."""
     records = rate_records(haiku_successes=10, haiku_failures=1, sonnet_successes=8, sonnet_failures=0)
 
     payload = run_recommendation(tmp_path, records, config=factory_config())
@@ -302,7 +302,8 @@ def test_success_rate_threshold_is_configurable(tmp_path: Path) -> None:
     payload = run_recommendation(tmp_path, records, config=factory_config(threshold=0.5))
 
     assert payload["source"] == "success_rate_policy"
-    assert payload["recommended_model"] == "haiku"
+    assert {combo["model"] for combo in payload["qualified_combinations"]} == {"haiku", "sonnet"}
+    assert payload["recommended_model"] == "sonnet"
     assert payload["routing_config"]["success_rate_threshold"] == 0.5
 
 

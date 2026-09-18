@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import json
+import os
+import shutil
 import subprocess
+from decimal import Decimal
 from pathlib import Path
 
 
@@ -130,6 +133,16 @@ def run_token_costs(run_dir: Path, transcripts_root: Path, config: Path, *extra:
             *extra,
             "--format", "json",
         ],
+        capture_output=True,
+        text=True,
+        cwd=repo_root(),
+        check=False,
+    )
+
+
+def run_cost_evaluation(*args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["uv", "run", ".kamino/evals/scripts/token_costs_evaluate.py", *args, "--format", "json"],
         capture_output=True,
         text=True,
         cwd=repo_root(),
@@ -457,3 +470,516 @@ def test_partial_cache_rates_fail_loudly(tmp_path):
     result = run_token_costs(run_dir, transcripts_root, config_path)
     assert result.returncode != 0
     assert "all of" in result.stderr
+
+
+def test_artifact_persists_reproducible_per_call_inputs_and_rates(tmp_path):
+    agent_file = str(tmp_path / "dispatch" / RUN_ID / "01-agent.md")
+    run_dir = build_capsule(tmp_path, records=[trace_record(agent_file)])
+    transcripts_root = tmp_path / "projects"
+    write_jsonl(
+        transcripts_root / "aaaa-session" / "subagents" / "agent-a1.jsonl",
+        transcript_entries_with_ttl_split(agent_file),
+    )
+    config = pricing_config(tmp_path / "config.json", cache_rates=True)
+
+    result = run_token_costs(run_dir, transcripts_root, config)
+    assert result.returncode == 0, result.stderr
+
+    payload = json.loads((run_dir / "token_costs.json").read_text(encoding="utf-8"))
+    assert payload["calculator_version"]
+    calls = payload["steps"][0]["calls"]
+    assert [call["model_id"] for call in calls] == [MODEL_ID, MODEL_ID]
+    assert [call["timestamp"] for call in calls] == [
+        "2026-07-20T10:00:10Z",
+        "2026-07-20T10:00:30Z",
+    ]
+    assert calls[0]["basis"] == "measured"
+    assert calls[0]["usage"] == {
+        "input_tokens": "10",
+        "output_tokens": "200",
+        "cache_read_input_tokens": "1000",
+        "cache_write_5m_input_tokens": "100",
+        "cache_write_1h_input_tokens": "400",
+    }
+    snapshot = calls[0]["rate_card"]
+    assert snapshot["model_id"] == MODEL_ID
+    assert snapshot["currency"] == "USD"
+    assert snapshot["pricing_hash"]
+    assert snapshot["input_per_mtok"] == "1.0"
+    assert calls[0]["cost_estimate"]["rate_card"] == snapshot
+
+
+def test_zero_rates_are_valid_and_recorded_as_real_zero_cost(tmp_path):
+    agent_file = str(tmp_path / "dispatch" / RUN_ID / "01-agent.md")
+    run_dir = build_capsule(tmp_path, records=[trace_record(agent_file)])
+    transcripts_root = tmp_path / "projects"
+    write_jsonl(
+        transcripts_root / "aaaa-session" / "subagents" / "agent-a1.jsonl",
+        transcript_entries(agent_file),
+    )
+    config = pricing_config(tmp_path / "config.json", cache_rates=True)
+    config_payload = json.loads(config.read_text(encoding="utf-8"))
+    for key in (
+        "input_per_mtok",
+        "output_per_mtok",
+        "cache_read_per_mtok",
+        "cache_write_5m_per_mtok",
+        "cache_write_1h_per_mtok",
+    ):
+        config_payload["pricing"]["models"]["haiku"][key] = 0
+    config.write_text(json.dumps(config_payload), encoding="utf-8")
+
+    result = run_token_costs(run_dir, transcripts_root, config)
+    assert result.returncode == 0, result.stderr
+    payload = json.loads((run_dir / "token_costs.json").read_text(encoding="utf-8"))
+    assert payload["totals"]["cost_usd"]["total"] == 0.0
+    assert all(Decimal(call["cost_estimate"]["cost"]["total_cost"]) == 0 for call in payload["steps"][0]["calls"])
+
+
+def test_reproduce_uses_saved_inputs_and_rate_snapshots_only(tmp_path):
+    agent_file = str(tmp_path / "dispatch" / RUN_ID / "01-agent.md")
+    run_dir = build_capsule(tmp_path, records=[trace_record(agent_file)])
+    transcripts_root = tmp_path / "projects"
+    write_jsonl(
+        transcripts_root / "aaaa-session" / "subagents" / "agent-a1.jsonl",
+        transcript_entries(agent_file),
+    )
+    config = pricing_config(tmp_path / "config.json", cache_rates=True)
+    accounting = run_token_costs(run_dir, transcripts_root, config)
+    assert accounting.returncode == 0, accounting.stderr
+    source = run_dir / "token_costs.json"
+    source_payload = json.loads(source.read_text(encoding="utf-8"))
+
+    # Replay must not consult either mutable external source.
+    config.unlink()
+    for transcript in transcripts_root.rglob("*.jsonl"):
+        transcript.unlink()
+    output = run_dir / "token_costs.reproduced.json"
+    result = run_cost_evaluation("reproduce", "--input", str(source), "--output", str(output))
+    assert result.returncode == 0, result.stderr
+
+    replay = json.loads(output.read_text(encoding="utf-8"))
+    assert replay["mode"] == "reproduce"
+    assert replay["source_run_id"] == RUN_ID
+    assert replay["totals"]["cost_usd"]["total"] == source_payload["totals"]["cost_usd"]["total"]
+    assert source_payload == json.loads(source.read_text(encoding="utf-8"))
+
+
+def test_reprice_writes_separate_artifact_and_uses_each_call_timestamp(tmp_path):
+    agent_file = str(tmp_path / "dispatch" / RUN_ID / "01-agent.md")
+    run_dir = build_capsule(tmp_path, records=[trace_record(agent_file)])
+    transcripts_root = tmp_path / "projects"
+    entries = transcript_entries(agent_file)
+    entries[-1]["timestamp"] = "2026-08-20T10:00:30Z"
+    # Keep transcript matching inside the trace window while calls cross a price boundary.
+    records = json.loads((run_dir / "trace.jsonl").read_text(encoding="utf-8").splitlines()[0])
+    records["ended_at"] = "2026-08-20T10:05:00Z"
+    write_jsonl(run_dir / "trace.jsonl", [records])
+    write_jsonl(transcripts_root / "aaaa-session" / "subagents" / "agent-a1.jsonl", entries)
+    config = pricing_config(tmp_path / "config.json", cache_rates=True)
+    accounting = run_token_costs(run_dir, transcripts_root, config)
+    assert accounting.returncode == 0, accounting.stderr
+    source = run_dir / "token_costs.json"
+    original = source.read_text(encoding="utf-8")
+
+    catalog = tmp_path / "historical-pricing.json"
+    catalog.write_text(
+        json.dumps(
+            {
+                "pricing": {
+                    "currency": "USD",
+                    "billing_mode": "standard",
+                    "source": "test-catalog",
+                    "rate_cards": [
+                        {
+                            "model_id": MODEL_ID,
+                            "pricing_version": "summer-1",
+                            "effective_from": "2026-07-01T00:00:00Z",
+                            "effective_to": "2026-08-01T00:00:00Z",
+                            "recorded_at": "2026-07-01T00:00:00Z",
+                            "input_per_mtok": 2,
+                            "output_per_mtok": 10,
+                            "cache_read_per_mtok": 0.2,
+                            "cache_write_5m_per_mtok": 2.5,
+                            "cache_write_1h_per_mtok": 4,
+                        },
+                        {
+                            "model_id": MODEL_ID,
+                            "pricing_version": "summer-2",
+                            "effective_from": "2026-08-01T00:00:00Z",
+                            "effective_to": None,
+                            "recorded_at": "2026-08-01T00:00:00Z",
+                            "input_per_mtok": 3,
+                            "output_per_mtok": 15,
+                            "cache_read_per_mtok": 0.3,
+                            "cache_write_5m_per_mtok": 3.75,
+                            "cache_write_1h_per_mtok": 6,
+                        },
+                    ],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    output = run_dir / "token_costs.repriced.json"
+    result = run_cost_evaluation(
+        "reprice", "--input", str(source), "--catalog", str(catalog), "--output", str(output)
+    )
+    assert result.returncode == 0, result.stderr
+
+    repriced = json.loads(output.read_text(encoding="utf-8"))
+    assert repriced["mode"] == "reprice"
+    assert [call["rate_card"]["pricing_version"] for call in repriced["steps"][0]["calls"]] == [
+        "summer-1",
+        "summer-2",
+    ]
+    assert source.read_text(encoding="utf-8") == original
+
+    explicit_output = run_dir / "token_costs.repriced-at-july.json"
+    explicit = run_cost_evaluation(
+        "reprice",
+        "--input",
+        str(source),
+        "--catalog",
+        str(catalog),
+        "--pricing-at",
+        "2026-07-15T00:00:00Z",
+        "--output",
+        str(explicit_output),
+    )
+    assert explicit.returncode == 0, explicit.stderr
+    explicit_payload = json.loads(explicit_output.read_text(encoding="utf-8"))
+    assert [call["rate_card"]["pricing_version"] for call in explicit_payload["steps"][0]["calls"]] == [
+        "summer-1",
+        "summer-1",
+    ]
+
+
+def test_historical_reprice_rejects_undated_legacy_prices(tmp_path):
+    agent_file = str(tmp_path / "dispatch" / RUN_ID / "01-agent.md")
+    run_dir = build_capsule(tmp_path, records=[trace_record(agent_file)])
+    transcripts_root = tmp_path / "projects"
+    write_jsonl(
+        transcripts_root / "aaaa-session" / "subagents" / "agent-a1.jsonl",
+        transcript_entries(agent_file),
+    )
+    legacy_config = pricing_config(tmp_path / "config.json", cache_rates=True)
+    accounting = run_token_costs(run_dir, transcripts_root, legacy_config)
+    assert accounting.returncode == 0, accounting.stderr
+
+    result = run_cost_evaluation(
+        "reprice",
+        "--input",
+        str(run_dir / "token_costs.json"),
+        "--catalog",
+        str(legacy_config),
+        "--output",
+        str(run_dir / "token_costs.repriced.json"),
+    )
+    assert result.returncode != 0
+    assert "legacy pricing has no effective dates" in result.stderr
+    assert not (run_dir / "token_costs.repriced.json").exists()
+
+
+def test_reproduce_rejects_unsupported_saved_calculator_version(tmp_path):
+    agent_file = str(tmp_path / "dispatch" / RUN_ID / "01-agent.md")
+    run_dir = build_capsule(tmp_path, records=[trace_record(agent_file)])
+    transcripts_root = tmp_path / "projects"
+    write_jsonl(
+        transcripts_root / "aaaa-session" / "subagents" / "agent-a1.jsonl",
+        transcript_entries(agent_file),
+    )
+    config = pricing_config(tmp_path / "config.json", cache_rates=True)
+    accounting = run_token_costs(run_dir, transcripts_root, config)
+    assert accounting.returncode == 0, accounting.stderr
+    source = run_dir / "token_costs.json"
+    payload = json.loads(source.read_text(encoding="utf-8"))
+    payload["calculator_version"] = "future-calculator-v99"
+    source.write_text(json.dumps(payload), encoding="utf-8")
+
+    output = run_dir / "token_costs.reproduced.json"
+    result = run_cost_evaluation("reproduce", "--input", str(source), "--output", str(output))
+    assert result.returncode != 0
+    assert "unsupported calculator_version" in result.stderr
+    assert not output.exists()
+
+
+def test_reproduce_rejects_call_and_rate_snapshot_model_mismatch(tmp_path):
+    agent_file = str(tmp_path / "dispatch" / RUN_ID / "01-agent.md")
+    run_dir = build_capsule(tmp_path, records=[trace_record(agent_file)])
+    transcripts_root = tmp_path / "projects"
+    write_jsonl(
+        transcripts_root / "aaaa-session" / "subagents" / "agent-a1.jsonl",
+        transcript_entries(agent_file),
+    )
+    config = pricing_config(tmp_path / "config.json", cache_rates=True)
+    accounting = run_token_costs(run_dir, transcripts_root, config)
+    assert accounting.returncode == 0, accounting.stderr
+    source = run_dir / "token_costs.json"
+    payload = json.loads(source.read_text(encoding="utf-8"))
+    payload["steps"][0]["calls"][0]["rate_card"]["model_id"] = "different-exact-model"
+    source.write_text(json.dumps(payload), encoding="utf-8")
+
+    output = run_dir / "token_costs.reproduced.json"
+    result = run_cost_evaluation("reproduce", "--input", str(source), "--output", str(output))
+    assert result.returncode != 0
+    assert "does not match rate snapshot model_id" in result.stderr
+    assert not output.exists()
+
+
+def test_reproduce_totals_follow_writer_per_step_rounding(tmp_path):
+    agent_1 = str(tmp_path / "dispatch" / RUN_ID / "01-agent.md")
+    agent_2 = str(tmp_path / "dispatch" / RUN_ID / "02-agent.md")
+    run_dir = build_capsule(
+        tmp_path,
+        records=[trace_record(agent_1), trace_record(agent_2, step=2)],
+    )
+    transcripts_root = tmp_path / "projects"
+    write_jsonl(transcripts_root / "a" / "subagents" / "agent-a.jsonl", transcript_entries(agent_1))
+    write_jsonl(transcripts_root / "b" / "subagents" / "agent-b.jsonl", transcript_entries(agent_2))
+    config = pricing_config(tmp_path / "config.json", cache_rates=True)
+    config_payload = json.loads(config.read_text(encoding="utf-8"))
+    entry = config_payload["pricing"]["models"]["haiku"]
+    for key in (
+        "input_per_mtok",
+        "cache_read_per_mtok",
+        "cache_write_5m_per_mtok",
+        "cache_write_1h_per_mtok",
+    ):
+        entry[key] = 0
+    entry["output_per_mtok"] = 0.001
+    config.write_text(json.dumps(config_payload), encoding="utf-8")
+    accounting = run_token_costs(run_dir, transcripts_root, config)
+    assert accounting.returncode == 0, accounting.stderr
+    source = run_dir / "token_costs.json"
+    recorded = json.loads(source.read_text(encoding="utf-8"))
+    assert recorded["totals"]["cost_usd"]["total"] == 0.0
+
+    output = run_dir / "token_costs.reproduced.json"
+    result = run_cost_evaluation("reproduce", "--input", str(source), "--output", str(output))
+    assert result.returncode == 0, result.stderr
+    replay = json.loads(output.read_text(encoding="utf-8"))
+    assert replay["totals"]["cost_usd"]["total"] == recorded["totals"]["cost_usd"]["total"]
+
+
+def test_reproduce_rejects_output_hardlink_to_source(tmp_path):
+    agent_file = str(tmp_path / "dispatch" / RUN_ID / "01-agent.md")
+    run_dir = build_capsule(tmp_path, records=[trace_record(agent_file)])
+    transcripts_root = tmp_path / "projects"
+    write_jsonl(
+        transcripts_root / "aaaa-session" / "subagents" / "agent-a1.jsonl",
+        transcript_entries(agent_file),
+    )
+    config = pricing_config(tmp_path / "config.json", cache_rates=True)
+    accounting = run_token_costs(run_dir, transcripts_root, config)
+    assert accounting.returncode == 0, accounting.stderr
+    source = run_dir / "token_costs.json"
+    original = source.read_text(encoding="utf-8")
+    output = run_dir / "hardlink.json"
+    os.link(source, output)
+
+    result = run_cost_evaluation("reproduce", "--input", str(source), "--output", str(output))
+    assert result.returncode != 0
+    assert "separate from the source" in result.stderr
+    assert source.read_text(encoding="utf-8") == original
+
+
+def test_default_accounting_rerun_preserves_original_snapshot_without_sources(tmp_path):
+    agent_file = str(tmp_path / "dispatch" / RUN_ID / "01-agent.md")
+    run_dir = build_capsule(tmp_path, records=[trace_record(agent_file)])
+    transcripts_root = tmp_path / "projects"
+    write_jsonl(
+        transcripts_root / "aaaa-session" / "subagents" / "agent-a1.jsonl",
+        transcript_entries(agent_file),
+    )
+    config = pricing_config(tmp_path / "config.json", cache_rates=True)
+    first = run_token_costs(run_dir, transcripts_root, config)
+    assert first.returncode == 0, first.stderr
+    artifact = run_dir / "token_costs.json"
+    original = artifact.read_bytes()
+
+    changed = json.loads(config.read_text(encoding="utf-8"))
+    changed["pricing"]["models"]["haiku"]["output_per_mtok"] = 999
+    config.write_text(json.dumps(changed), encoding="utf-8")
+    shutil.rmtree(transcripts_root)
+
+    second = run_token_costs(run_dir, transcripts_root, config)
+    assert second.returncode == 0, second.stderr
+    assert json.loads(second.stdout)["reused"] is True
+    assert artifact.read_bytes() == original
+
+
+def test_default_accounting_rejects_stale_snapshot_after_trace_append(tmp_path):
+    agent_file = str(tmp_path / "dispatch" / RUN_ID / "01-agent.md")
+    run_dir = build_capsule(tmp_path, records=[trace_record(agent_file)])
+    transcripts_root = tmp_path / "projects"
+    write_jsonl(
+        transcripts_root / "aaaa-session" / "subagents" / "agent-a1.jsonl",
+        transcript_entries(agent_file),
+    )
+    config = pricing_config(tmp_path / "config.json", cache_rates=True)
+    first = run_token_costs(run_dir, transcripts_root, config)
+    assert first.returncode == 0, first.stderr
+    artifact = run_dir / "token_costs.json"
+    original = artifact.read_bytes()
+
+    trace = run_dir / "trace.jsonl"
+    appended = trace_record(agent_file, attempt=2)
+    trace.write_text(
+        trace.read_text(encoding="utf-8") + json.dumps(appended) + "\n",
+        encoding="utf-8",
+    )
+    second = run_token_costs(run_dir, transcripts_root, config)
+    assert second.returncode != 0
+    assert "current trace differs" in second.stderr
+    assert "use --output" in second.stderr
+    assert artifact.read_bytes() == original
+
+
+def test_accounting_never_overwrites_an_explicit_existing_output(tmp_path):
+    agent_file = str(tmp_path / "dispatch" / RUN_ID / "01-agent.md")
+    run_dir = build_capsule(tmp_path, records=[trace_record(agent_file)])
+    transcripts_root = tmp_path / "projects"
+    write_jsonl(
+        transcripts_root / "aaaa-session" / "subagents" / "agent-a1.jsonl",
+        transcript_entries(agent_file),
+    )
+    config = pricing_config(tmp_path / "config.json", cache_rates=True)
+    output = run_dir / "alternate-costs.json"
+    output.write_text("historical evidence\n", encoding="utf-8")
+
+    result = run_token_costs(run_dir, transcripts_root, config, "--output", str(output))
+    assert result.returncode != 0
+    assert "refusing to overwrite" in result.stderr
+    assert output.read_text(encoding="utf-8") == "historical evidence\n"
+
+
+def test_default_accounting_preserves_legacy_artifact_and_requests_new_output(tmp_path):
+    agent_file = str(tmp_path / "dispatch" / RUN_ID / "01-agent.md")
+    run_dir = build_capsule(tmp_path, records=[trace_record(agent_file)])
+    legacy = {
+        "schema_version": "kamino451.token-costs.v1",
+        "run_id": RUN_ID,
+        "totals": {"cost_usd": {"total": 1.25}},
+        "steps": [],
+    }
+    artifact = run_dir / "token_costs.json"
+    original = json.dumps(legacy)
+    artifact.write_text(original, encoding="utf-8")
+
+    result = run_token_costs(run_dir, tmp_path / "missing-transcripts", tmp_path / "missing-config.json")
+    assert result.returncode != 0
+    assert "preserve it and use --output" in result.stderr
+    assert artifact.read_text(encoding="utf-8") == original
+
+
+def test_reprice_preserves_source_provider_and_billing_mode_selectors(tmp_path):
+    agent_file = str(tmp_path / "dispatch" / RUN_ID / "01-agent.md")
+    run_dir = build_capsule(tmp_path, records=[trace_record(agent_file)])
+    transcripts_root = tmp_path / "projects"
+    write_jsonl(
+        transcripts_root / "aaaa-session" / "subagents" / "agent-a1.jsonl",
+        transcript_entries(agent_file),
+    )
+    config = pricing_config(tmp_path / "config.json", cache_rates=True)
+    accounting = run_token_costs(run_dir, transcripts_root, config)
+    assert accounting.returncode == 0, accounting.stderr
+    source = run_dir / "token_costs.json"
+    payload = json.loads(source.read_text(encoding="utf-8"))
+    for call in payload["steps"][0]["calls"]:
+        call["rate_card"]["provider"] = "anthropic"
+        call["rate_card"]["billing_mode"] = "batch"
+        call["cost_estimate"]["rate_card"]["provider"] = "anthropic"
+        call["cost_estimate"]["rate_card"]["billing_mode"] = "batch"
+    source.write_text(json.dumps(payload), encoding="utf-8")
+
+    def card(provider: str, input_rate: int) -> dict:
+        return {
+            "provider": provider,
+            "billing_mode": "batch",
+            "model_id": MODEL_ID,
+            "pricing_version": f"{provider}-batch",
+            "effective_from": "2026-07-01T00:00:00Z",
+            "effective_to": None,
+            "recorded_at": "2026-07-01T00:00:00Z",
+            "input_per_mtok": input_rate,
+            "output_per_mtok": input_rate,
+            "cache_read_per_mtok": input_rate,
+            "cache_write_5m_per_mtok": input_rate,
+            "cache_write_1h_per_mtok": input_rate,
+        }
+
+    catalog = tmp_path / "provider-pricing.json"
+    catalog.write_text(
+        json.dumps(
+            {
+                "pricing": {
+                    "currency": "USD",
+                    "rate_cards": [card("anthropic", 2), card("reseller", 99)],
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    output = run_dir / "token_costs.repriced.json"
+    result = run_cost_evaluation(
+        "reprice", "--input", str(source), "--catalog", str(catalog), "--output", str(output)
+    )
+    assert result.returncode == 0, result.stderr
+    repriced = json.loads(output.read_text(encoding="utf-8"))
+    assert {
+        (call["rate_card"]["provider"], call["rate_card"]["billing_mode"], call["rate_card"]["pricing_version"])
+        for call in repriced["steps"][0]["calls"]
+    } == {("anthropic", "batch", "anthropic-batch")}
+
+
+def test_reprice_rejects_non_usd_rates_before_writing_output(tmp_path):
+    agent_file = str(tmp_path / "dispatch" / RUN_ID / "01-agent.md")
+    run_dir = build_capsule(tmp_path, records=[trace_record(agent_file)])
+    transcripts_root = tmp_path / "projects"
+    write_jsonl(
+        transcripts_root / "aaaa-session" / "subagents" / "agent-a1.jsonl",
+        transcript_entries(agent_file),
+    )
+    config = pricing_config(tmp_path / "config.json", cache_rates=True)
+    accounting = run_token_costs(run_dir, transcripts_root, config)
+    assert accounting.returncode == 0, accounting.stderr
+
+    catalog = tmp_path / "eur-pricing.json"
+    catalog.write_text(
+        json.dumps(
+            {
+                "pricing": {
+                    "currency": "EUR",
+                    "rate_cards": [
+                        {
+                            "model_id": MODEL_ID,
+                            "pricing_version": "eur-v1",
+                            "effective_from": "2026-07-01T00:00:00Z",
+                            "effective_to": None,
+                            "recorded_at": "2026-07-01T00:00:00Z",
+                            "input_per_mtok": 1,
+                            "output_per_mtok": 5,
+                            "cache_read_per_mtok": 0.1,
+                            "cache_write_5m_per_mtok": 1.25,
+                            "cache_write_1h_per_mtok": 2,
+                        }
+                    ],
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    output = run_dir / "token_costs.repriced.json"
+    result = run_cost_evaluation(
+        "reprice",
+        "--input",
+        str(run_dir / "token_costs.json"),
+        "--catalog",
+        str(catalog),
+        "--output",
+        str(output),
+    )
+    assert result.returncode != 0
+    assert "cannot apply EUR rates" in result.stderr
+    assert not output.exists()

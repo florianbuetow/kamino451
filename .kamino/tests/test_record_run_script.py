@@ -323,6 +323,32 @@ def test_record_run_marks_a_correct_solution_successful(tmp_path: Path) -> None:
 
     ledger_lines = ledger.read_text(encoding="utf-8").splitlines()
     assert len(ledger_lines) == 1
+    record = json.loads(ledger_lines[0])
+    assert record["cost_artifact"] == {
+        "run_id": run_dir.name, "path": str(run_dir / "token_costs.json"),
+    }
+    assert record["verification_evidence"]["cost_artifact"] == record["cost_artifact"]
+
+    # Consume the actual writer/ledger output through the routing CLI, proving
+    # the artifact contract end to end rather than only with synthetic inputs.
+    config = json.loads((repo_root() / ".kamino" / "factory-config.json").read_text())
+    config["routing"]["min_attempts_for_rate"] = 1
+    config["routing"]["cost"]["min_samples"] = 1
+    config_path = base / "routing-config.json"
+    write_json(config_path, config)
+    recommendation = subprocess.run([
+        "uv", "run", ".kamino/evals/scripts/route_recommendation.py",
+        "--ledger", str(ledger),
+        "--task-eval", str(tasks_root / "evaluations" / f"{DEMO_EVAL_ID}.json"),
+        "--difficulty", str(tasks_root / "difficulty" / f"{DEMO_EVAL_ID}.json"),
+        "--config", str(config_path), "--format", "json",
+    ], cwd=repo_root(), capture_output=True, text=True)
+    assert recommendation.returncode == 0, recommendation.stderr
+    recommendation_payload = json.loads(recommendation.stdout)
+    assert recommendation_payload["cost_policy"]["status"] == "applied"
+    estimate = recommendation_payload["candidate_scores"][0]["cost_estimate"]
+    assert estimate["sample_count"] == 1
+    assert float(estimate["amount_usd"]) > 0
 
     assert (tasks_root / "outcomes" / f"{DEMO_EVAL_ID}-a2-success.json").is_file()
     assert (run_dir / "verify" / "solution.py").is_file()
